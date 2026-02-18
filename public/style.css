@@ -1,189 +1,104 @@
-html, body {
-  height: 100%;
-  margin: 0;
-  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-}
+html, body { height:100%; margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+#map { height:100%; width:100%; }
 
-#map {
-  height: 100%;
-  width: 100%;
-}
-
-/* ===== general UI ===== */
 .btn{
-  display:inline-flex;
-  align-items:center;
-  justify-content:center;
-  gap:8px;
+  display:inline-flex; align-items:center; justify-content:center;
   border:1px solid rgba(0,0,0,0.14);
   background: rgba(255,255,255,0.95);
-  padding:8px 10px;
-  border-radius:10px;
-  text-decoration:none;
-  color:#111;
-  cursor:pointer;
-  user-select:none;
+  padding:8px 10px; border-radius:10px;
+  text-decoration:none; color:#111; cursor:pointer; user-select:none;
 }
-
 .iconBtn{
   border:1px solid rgba(0,0,0,0.14);
   background: rgba(255,255,255,0.95);
-  padding:8px 10px;
-  border-radius:10px;
+  padding:8px 10px; border-radius:10px;
   cursor:pointer;
 }
-
 .small{ font-size:12px; }
 .muted{ color: rgba(0,0,0,0.55); }
-.success{ color: #1b5e20; }
-.error{ color: #b71c1c; }
 
-.row{ display:flex; align-items:center; }
-
-/* ===== panel ===== */
+/* PANEL */
 .panel{
-  position: absolute;
-  top: 12px;
-  left: 12px;
-  width: 25vw;
-  min-width: 280px;
-  max-width: 380px;
+  position:absolute;
+  top:12px; left:12px;
+  width:25vw; min-width:280px; max-width:380px;
   background: rgba(255,255,255,0.96);
   border: 1px solid rgba(0,0,0,0.12);
   border-radius: 14px;
   box-shadow: 0 12px 30px rgba(0,0,0,0.14);
-  overflow: hidden;
+  overflow:hidden;
+  z-index: 1000; /* <<< TO BYŁ PROBLEM */
 }
-
-.panelTop{
-  display:flex;
-  gap:8px;
-  padding:10px;
-  align-items:center;
-}
-
+.panelTop{ display:flex; gap:8px; padding:10px; align-items:center; }
 .panelBody{
-  padding: 10px;
-  border-top: 1px solid rgba(0,0,0,0.08);
-  max-height: 70vh;
-  overflow:auto;
+  padding:10px;
+  border-top:1px solid rgba(0,0,0,0.08);
+  max-height:70vh; overflow:auto;
 }
+.panel.isMin{ width:auto; min-width:unset; max-width:unset; }
+.panel.isMin .panelBody{ display:none; }
 
-/* minimized */
-.panel.isMin{
-  width: auto;
-  min-width: unset;
-  max-width: unset;
-}
-.panel.isMin .panelBody{
-  display:none;
-}
-.panel.isMin .btn,
-.panel.isMin .iconBtn{
-  padding:8px 10px;
-}
-
-/* filters */
 .subList{ padding:6px 0 8px 0; display:flex; flex-direction:column; gap:6px; }
 .subRow{ display:flex; align-items:center; gap:8px; }
 .swatch{ width:12px; height:12px; border-radius:999px; border:1px solid rgba(0,0,0,0.12); }
 
-/* popup */
+/* POPUP */
 .popupTitle{ font-weight:700; margin-bottom:6px; }
 .popupMeta{ font-size:12px; color:rgba(0,0,0,0.65); }
-.popupNote{ margin-top:6px; }
-.popupActions{ display:flex; gap:8px; margin-top:10px; flex-wrap: wrap; }
+.popupActions{ display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
+.popupInlineNote{ margin-top:10px; }
+.popupInlineNote textarea{
+  width:100%; box-sizing:border-box;
+  min-height:64px; resize:vertical;
+  padding:8px 10px; border-radius:10px;
+  border:1px solid rgba(0,0,0,0.14);
+}
 
-/* marker labels */
+/* MARKER LABELS: większe + wcześniej */
 .markerLabel{
   background: rgba(255,255,255,0.92);
   border: 1px solid rgba(0,0,0,0.12);
   border-radius: 10px;
-  padding: 2px 6px;
+  padding: 3px 7px;
   box-shadow: 0 6px 18px rgba(0,0,0,0.12);
-  font-size: 12px;
+  font-size: 14px; /* większe */
   line-height: 1.2;
   white-space: nowrap;
 }
-.leaflet-tooltip.markerLabel:before{
-  border-top-color: rgba(255,255,255,0.92);
-}
+.leaflet-tooltip.markerLabel:before{ border-top-color: rgba(255,255,255,0.92); }
 
-/* ===== form page ===== */
-.container{
-  max-width: 560px;
-  margin: 18px auto;
-  padding: 0 12px;
+/* NOTES */
+.notesBox{ margin-top:12px; border-top:1px solid rgba(0,0,0,0.12); padding-top:12px; }
+.notesHeader{ display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.notesTitle{ font-weight:700; }
+.notesInput{ margin-top:8px; min-height:110px; resize: both; width:100%; box-sizing:border-box; }
+.notesList{ margin-top:10px; display:flex; flex-direction:column; gap:10px; }
+.noteRow{
+  display:flex; gap:10px; align-items:flex-start;
+  padding:10px; border:1px solid rgba(0,0,0,0.12);
+  border-radius:12px; background: rgba(255,255,255,0.9);
 }
+.noteText{ white-space:pre-wrap; flex:1; font-size:12px; }
+
+/* FORM */
+.container{ max-width:560px; margin:18px auto; padding:0 12px; }
 .card{
-  background: #fff;
-  border: 1px solid rgba(0,0,0,0.12);
-  border-radius: 14px;
-  box-shadow: 0 10px 24px rgba(0,0,0,0.12);
-  padding: 16px;
+  background:#fff; border:1px solid rgba(0,0,0,0.12);
+  border-radius:14px; box-shadow:0 10px 24px rgba(0,0,0,0.12);
+  padding:16px;
 }
 label{ display:block; margin-top:12px; margin-bottom:6px; font-weight:600; }
-input, select, textarea{
-  width:100%;
-  box-sizing:border-box;
-  padding:10px 12px;
-  border-radius:10px;
+input, select{
+  width:100%; box-sizing:border-box;
+  padding:10px 12px; border-radius:10px;
   border:1px solid rgba(0,0,0,0.14);
-  outline:none;
 }
-.manageBox{
-  margin-top:10px;
-  padding:10px;
-  border:1px dashed rgba(0,0,0,0.18);
-  border-radius:12px;
-}
+.manageBox{ margin-top:10px; padding:10px; border:1px dashed rgba(0,0,0,0.18); border-radius:12px; }
 .subManageList{ margin-top:10px; display:flex; flex-direction:column; gap:8px; }
 .subTagRow{ display:flex; gap:8px; align-items:center; }
 .tagBtn{
-  flex:1;
-  text-align:left;
+  flex:1; text-align:left;
   border:1px solid rgba(0,0,0,0.14);
   background: rgba(255,255,255,0.95);
-  padding:8px 10px;
-  border-radius:10px;
-  cursor:pointer;
-}
-
-/* ===== notes box ===== */
-.notesBox{
-  margin-top:12px;
-  border-top: 1px solid rgba(0,0,0,0.12);
-  padding-top: 12px;
-}
-.notesHeader{
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:10px;
-}
-.notesTitle{ font-weight:700; }
-.notesInput{
-  margin-top:8px;
-  min-height: 90px;
-  resize: both; /* rozszerzanie w pionie i poziomie */
-}
-.notesList{
-  margin-top:10px;
-  display:flex;
-  flex-direction:column;
-  gap:10px;
-}
-.noteRow{
-  display:flex;
-  gap:10px;
-  align-items:flex-start;
-  padding:10px;
-  border:1px solid rgba(0,0,0,0.12);
-  border-radius:12px;
-  background: rgba(255,255,255,0.9);
-}
-.noteText{
-  white-space: pre-wrap;
-  flex:1;
-  font-size: 12px;
+  padding:8px 10px; border-radius:10px; cursor:pointer;
 }
