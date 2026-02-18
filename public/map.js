@@ -1,22 +1,178 @@
-const REFRESH_MS = 15000;
-document.getElementById("refresh").textContent = String(REFRESH_MS / 1000);
-
 const map = L.map("map").setView([52.2297, 21.0122], 6);
 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 19,
   attribution: "© OpenStreetMap",
 }).addTo(map);
 
-// ===== UI panel toggle =====
+// ===== Panel minimalize =====
 const panel = document.getElementById("panel");
 const toggleBtn = document.getElementById("panelToggle");
-const closeBtn = document.getElementById("panelClose");
-function setPanel(open) { panel.classList.toggle("isOpen", !!open); }
-toggleBtn.onclick = () => setPanel(!panel.classList.contains("isOpen"));
-closeBtn.onclick = () => setPanel(false);
-map.on("click", () => { if (window.innerWidth <= 900) setPanel(false); });
+toggleBtn.onclick = () => {
+  panel.classList.toggle("isMin");
+};
 
-// ===== Colors =====
+// ===== Buttons =====
+const myLocBtn = document.getElementById("myLocBtn");
+myLocBtn.onclick = () => {
+  if (!navigator.geolocation) return;
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      const { latitude, longitude, accuracy } = pos.coords;
+      setMyLocation(latitude, longitude, accuracy);
+      map.setView([latitude, longitude], Math.max(map.getZoom(), 14));
+    },
+    () => {},
+    { enableHighAccuracy: true, timeout: 8000, maximumAge: 10000 }
+  );
+};
+
+// ===== My location marker =====
+let myLocationMarker = null;
+let myAccuracyCircle = null;
+function setMyLocation(lat, lng, accuracy) {
+  if (!myLocationMarker) {
+    myLocationMarker = L.circleMarker([lat, lng], {
+      radius: 7,
+      weight: 2,
+      color: "rgba(0,0,0,0.4)",
+      fillColor: "#000",
+      fillOpacity: 0.9,
+    }).addTo(map);
+    myLocationMarker.bindPopup(`Ty (dokładność ~${Math.round(accuracy)}m)`);
+  } else {
+    myLocationMarker.setLatLng([lat, lng]);
+    myLocationMarker.setPopupContent(`Ty (dokładność ~${Math.round(accuracy)}m)`);
+  }
+
+  if (Number.isFinite(accuracy)) {
+    if (!myAccuracyCircle) {
+      myAccuracyCircle = L.circle([lat, lng], {
+        radius: Math.max(accuracy, 10),
+        weight: 1,
+        color: "rgba(0,0,0,0.2)",
+        fillColor: "rgba(0,0,0,0.06)",
+        fillOpacity: 1,
+      }).addTo(map);
+    } else {
+      myAccuracyCircle.setLatLng([lat, lng]);
+      myAccuracyCircle.setRadius(Math.max(accuracy, 10));
+    }
+  }
+}
+
+// ===== Notes UI =====
+const notesBox = document.getElementById("notesBox");
+const notesTitle = document.getElementById("notesTitle");
+const notesClose = document.getElementById("notesClose");
+const notesInput = document.getElementById("notesInput");
+const notesAdd = document.getElementById("notesAdd");
+const notesList = document.getElementById("notesList");
+const notesStatus = document.getElementById("notesStatus");
+
+let activePointId = null;
+let activePointName = "";
+
+notesClose.onclick = () => {
+  notesBox.style.display = "none";
+  activePointId = null;
+  notesInput.value = "";
+  notesList.innerHTML = "";
+  notesStatus.textContent = "";
+};
+
+async function fetchNotes(pointId) {
+  const res = await fetch(`/api/points/${encodeURIComponent(pointId)}/notes`, { cache: "no-store" });
+  const data = await res.json();
+  if (!data?.ok) throw new Error(data?.error || "Notes error");
+  return data.notes || [];
+}
+
+function renderNotes(notes) {
+  notesList.innerHTML = "";
+  if (!notes.length) {
+    const el = document.createElement("div");
+    el.className = "small muted";
+    el.textContent = "Brak notatek.";
+    notesList.appendChild(el);
+    return;
+  }
+
+  notes.forEach((txt, idx) => {
+    const row = document.createElement("div");
+    row.className = "noteRow";
+
+    const pre = document.createElement("div");
+    pre.className = "noteText";
+    pre.textContent = txt;
+
+    const del = document.createElement("button");
+    del.className = "iconBtn";
+    del.title = "Usuń notatkę";
+    del.textContent = "🗑";
+    del.onclick = async () => {
+      try {
+        notesStatus.textContent = "Usuwam…";
+        const res = await fetch(`/api/points/${encodeURIComponent(activePointId)}/notes/${idx}`, {
+          method: "DELETE",
+        });
+        const data = await res.json();
+        if (!data?.ok) throw new Error(data?.error || "Delete failed");
+        renderNotes(data.notes || []);
+        notesStatus.textContent = "✅ Usunięto";
+        setTimeout(() => (notesStatus.textContent = ""), 900);
+      } catch (e) {
+        notesStatus.textContent = `⚠️ ${e.message}`;
+      }
+    };
+
+    row.appendChild(pre);
+    row.appendChild(del);
+    notesList.appendChild(row);
+  });
+}
+
+async function openNotes(pointId, pointName) {
+  activePointId = pointId;
+  activePointName = pointName;
+
+  notesTitle.textContent = `Notatki · ${pointName}`;
+  notesBox.style.display = "block";
+  panel.classList.remove("isMin"); // rozwiń panel gdy wchodzimy w notatki
+
+  try {
+    notesStatus.textContent = "Ładuję…";
+    const notes = await fetchNotes(pointId);
+    renderNotes(notes);
+    notesStatus.textContent = "";
+  } catch (e) {
+    notesStatus.textContent = `⚠️ ${e.message}`;
+  }
+}
+
+notesAdd.onclick = async () => {
+  const text = String(notesInput.value || "").trim();
+  if (!activePointId) return;
+  if (!text) return;
+
+  try {
+    notesStatus.textContent = "Zapisuję…";
+    const res = await fetch(`/api/points/${encodeURIComponent(activePointId)}/notes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    const data = await res.json();
+    if (!data?.ok) throw new Error(data?.error || "Add failed");
+    notesInput.value = "";
+    renderNotes(data.notes || []);
+    notesStatus.textContent = "✅ Dodano";
+    setTimeout(() => (notesStatus.textContent = ""), 900);
+  } catch (e) {
+    notesStatus.textContent = `⚠️ ${e.message}`;
+  }
+};
+
+// ===== Map markers + filters =====
 const BASE_COLORS = {
   "Stacja benzynowa": "#2e7d32",
   "Warsztat": "#ef6c00",
@@ -51,27 +207,23 @@ function mix(c1, c2, t) {
   return rgbToHex({ r: Math.round(a.r + (b.r - a.r) * t), g: Math.round(a.g + (b.g - a.g) * t), b: Math.round(a.b + (b.b - a.b) * t) });
 }
 function colorFor(category, subcategory) {
-  const base = BASE_COLORS[category] || "#333333";
+  const base = BASE_COLORS[category] || "#333";
   const sub = String(subcategory || "").trim();
   if (!sub) return base;
   const t = hashTo01(`${category}::${sub}`);
-  return t < 0.5 ? mix(base, "#ffffff", 0.18 + t * 0.22) : mix(base, "#000000", 0.12 + (t - 0.5) * 0.22);
+  return t < 0.5 ? mix(base, "#fff", 0.18 + t * 0.22) : mix(base, "#000", 0.12 + (t - 0.5) * 0.22);
 }
 
-// ===== Structures =====
-const layers = new Map();  // key -> group
-const enabled = new Map(); // key -> bool
-const markers = new Map(); // key -> markers
-let didInitialFit = false;
-let userInteracted = false;
-
-map.on("dragstart zoomstart", () => { userInteracted = true; });
+const layers = new Map();   // key -> layerGroup
+const enabled = new Map();  // key -> bool
+const markers = new Map();  // key -> markers
 
 function keyOf(p) {
   const cat = String(p.category || "").trim();
   const sub = String(p.subcategory || "").trim();
   return `${cat}||${sub}`;
 }
+
 function ensureLayer(key) {
   if (!layers.has(key)) {
     const g = L.layerGroup().addTo(map);
@@ -80,8 +232,12 @@ function ensureLayer(key) {
     markers.set(key, []);
   }
 }
+
 function clearAll() {
-  for (const [k, g] of layers.entries()) { g.clearLayers(); markers.set(k, []); }
+  for (const [k, g] of layers.entries()) {
+    g.clearLayers();
+    markers.set(k, []);
+  }
 }
 
 function addPoint(p) {
@@ -92,6 +248,7 @@ function addPoint(p) {
   ensureLayer(key);
 
   const col = colorFor(cat, sub);
+
   const m = L.circleMarker([p.lat, p.lng], {
     radius: 7,
     weight: 2,
@@ -100,7 +257,7 @@ function addPoint(p) {
     fillOpacity: 0.92,
   });
 
-  // tooltip (name above marker)
+  // label (tylko przy zoom>=12 i małym zagęszczeniu)
   m.bindTooltip(esc(p.name), {
     permanent: true,
     direction: "top",
@@ -111,7 +268,6 @@ function addPoint(p) {
 
   const dest = encodeURIComponent(`${p.lat},${p.lng}`);
   const gmapsNav = `https://www.google.com/maps/dir/?api=1&destination=${dest}`;
-  const gmapsPin = `https://www.google.com/maps/search/?api=1&query=${dest}`;
 
   const popup = `
     <div class="popupTitle">${esc(p.name)}</div>
@@ -121,52 +277,22 @@ function addPoint(p) {
     </div>
     <div class="popupActions">
       <a class="btn" href="${gmapsNav}" target="_blank" rel="noopener">Nawiguj</a>
-      <a class="btn" href="${gmapsPin}" target="_blank" rel="noopener">Otwórz w Maps</a>
-      <button class="btn" data-copy="${esc(gmapsNav)}">Kopiuj nawigację</button>
+      <button class="btn" data-notes="1">Notatki</button>
     </div>
   `;
 
   m.bindPopup(popup);
   m.on("popupopen", (e) => {
     const root = e.popup.getElement();
-    const btn = root?.querySelector("button[data-copy]");
-    if (!btn) return;
-    btn.onclick = async () => {
-      const url = btn.getAttribute("data-copy") || "";
-      try {
-        await navigator.clipboard.writeText(url);
-        btn.textContent = "Skopiowano ✓";
-        setTimeout(() => (btn.textContent = "Kopiuj nawigację"), 1200);
-      } catch {
-        prompt("Skopiuj:", url);
-      }
-    };
+    const btnNotes = root?.querySelector("button[data-notes]");
+    if (btnNotes) {
+      btnNotes.onclick = () => openNotes(p.id, p.name);
+    }
   });
 
   m.addTo(layers.get(key));
   markers.get(key).push(m);
-
   if (!enabled.get(key)) map.removeLayer(layers.get(key));
-}
-
-function fitToVisible() {
-  const bounds = L.latLngBounds([]);
-  let any = false;
-  for (const [k, isOn] of enabled.entries()) {
-    if (!isOn) continue;
-    for (const m of (markers.get(k) || [])) { bounds.extend(m.getLatLng()); any = true; }
-  }
-  if (any) map.fitBounds(bounds.pad(0.18));
-}
-
-function countForCategory(cat) {
-  let n = 0;
-  for (const k of layers.keys()) {
-    const [c] = k.split("||");
-    if (c !== cat) continue;
-    n += (markers.get(k) || []).length;
-  }
-  return n;
 }
 
 function renderFilters() {
@@ -179,10 +305,11 @@ function renderFilters() {
     if (!byCat.has(cat)) byCat.set(cat, new Set());
     byCat.get(cat).add(sub || "");
   }
-  const cats = Array.from(byCat.keys()).sort((a, b) => a.localeCompare(b, "pl"));
 
+  const cats = Array.from(byCat.keys()).sort((a, b) => a.localeCompare(b, "pl"));
   for (const cat of cats) {
     const subs = Array.from(byCat.get(cat)).sort((a, b) => a.localeCompare(b, "pl"));
+
     const details = document.createElement("details");
     details.open = true;
 
@@ -238,7 +365,16 @@ function renderFilters() {
   }
 }
 
-// ===== Labels visibility (zoom + density) =====
+function countForCategory(cat) {
+  let n = 0;
+  for (const k of layers.keys()) {
+    const [c] = k.split("||");
+    if (c !== cat) continue;
+    n += (markers.get(k) || []).length;
+  }
+  return n;
+}
+
 function visibleMarkerCountInView() {
   const b = map.getBounds();
   let n = 0;
@@ -259,21 +395,17 @@ function updateLabelsVisibility() {
   for (const [k, isOn] of enabled.entries()) {
     const arr = markers.get(k) || [];
     for (const m of arr) {
-      // tooltip jest permanent, więc tylko toggle opacity/display via class
       const tt = m.getTooltip();
-      if (!tt) continue;
-      const el = tt.getElement?.();
+      const el = tt?.getElement?.();
       if (!el) continue;
       el.style.display = (show && isOn) ? "block" : "none";
     }
   }
 }
 
-map.on("zoomend moveend", () => updateLabelsVisibility());
+map.on("zoomend moveend", updateLabelsVisibility);
 
 async function refresh() {
-  const status = document.getElementById("status");
-  const countEl = document.getElementById("count");
   try {
     const res = await fetch("/api/points?max=5000", { cache: "no-store" });
     const data = await res.json();
@@ -284,18 +416,11 @@ async function refresh() {
 
     renderFilters();
     updateLabelsVisibility();
-
-    status.textContent = `✅ OK · ${new Date().toLocaleTimeString()}`;
-    countEl.textContent = `Punkty: ${data.count}`;
-
-    if (!didInitialFit && !userInteracted) { fitToVisible(); didInitialFit = true; }
   } catch (e) {
-    status.textContent = `⚠️ ${e.message}`;
+    // celowo bez spamowania UI — panel ma być mały
+    console.warn(e);
   }
 }
 
-document.getElementById("fitBtn").onclick = () => fitToVisible();
-document.getElementById("reloadBtn").onclick = () => refresh();
-
 refresh();
-setInterval(refresh, REFRESH_MS);
+setInterval(refresh, 15000);
