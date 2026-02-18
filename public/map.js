@@ -1,69 +1,133 @@
 const REFRESH_MS = 15000;
 const NOTES_REFRESH_MS = 5000;
 
-const LS_CAT_COLORS = "mapyourpoints_cat_colors_v1";
+// =========================
+//  Kolory kategorii (SZTYWNO)
+// =========================
+// Ustalona paleta: wyraźne, czytelne na mapie.
+// Dla nowych kategorii: dopisz tu wpis, albo poleci fallback.
+const CATEGORY_BASE_COLORS = {
+  "Stacja benzynowa": "#2E7D32",            // green
+  "Warsztat": "#EF6C00",                    // orange
+  "Parking": "#1565C0",                     // blue
+  "Ważne Miejsce": "#6A1B9A",               // purple
+  "Agencja celna / weterynarz": "#6D4C41",  // brown
 
-function loadCatColors() {
-  try { return JSON.parse(localStorage.getItem(LS_CAT_COLORS) || "{}") || {}; }
-  catch { return {}; }
-}
-function saveCatColors(obj) {
-  localStorage.setItem(LS_CAT_COLORS, JSON.stringify(obj || {}));
-}
+  // +6 “gotowych” (jeśli user doda takie nazwy — od razu będzie spójnie)
+  "Rozrywka": "#C2185B",                    // magenta
+  "Jedzenie": "#D32F2F",                    // red
+  "Nocleg": "#00838F",                      // teal
+  "Stacja kontroli": "#455A64",             // blue-grey
+  "Myjnia": "#0277BD",                      // light-ish blue
+  "Magazyn": "#5D4037",                     // deep brown
+};
+
+// Paleta fallback (gdy pojawi się nowa kategoria i nie ma jej w mapie powyżej)
+const EXTRA_CATEGORY_COLORS = [
+  "#7B1FA2", "#1976D2", "#388E3C", "#F57C00", "#C62828", "#00897B",
+  "#5E35B1", "#039BE5", "#43A047", "#FB8C00", "#D81B60", "#546E7A",
+];
+
+// =========================
+// Helpers (kolor)
+// =========================
 function esc(s) {
   return String(s || "").replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[c]));
 }
-function hashTo01(str) {
+function clamp(x, a, b) { return Math.max(a, Math.min(b, x)); }
+
+function hash32(str) {
   const s = String(str || "");
   let h = 2166136261;
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
-  return ((h >>> 0) % 1000) / 999;
+  return h >>> 0;
 }
+function hashTo01(str) { return (hash32(str) % 100000) / 99999; }
+
 function hexToRgb(hex) {
   const m = String(hex).replace("#", "");
   const n = parseInt(m.length === 3 ? m.split("").map(x => x + x).join("") : m, 16);
   return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
 }
 function rgbToHex({ r, g, b }) {
-  const to = (x) => x.toString(16).padStart(2, "0");
-  return `#${to(Math.max(0, Math.min(255, r)))}${to(Math.max(0, Math.min(255, g)))}${to(Math.max(0, Math.min(255, b)))}`;
+  const to = (x) => clamp(Math.round(x), 0, 255).toString(16).padStart(2, "0");
+  return `#${to(r)}${to(g)}${to(b)}`;
 }
 function mix(c1, c2, t) {
   const a = hexToRgb(c1), b = hexToRgb(c2);
-  return rgbToHex({ r: Math.round(a.r + (b.r - a.r) * t), g: Math.round(a.g + (b.g - a.g) * t), b: Math.round(a.b + (b.b - a.b) * t) });
-}
-function randomNiceColor(seedStr) {
-  // deterministyczny “random” po nazwie
-  const t = hashTo01(seedStr);
-  // prosta paleta w hexach przez miksowanie
-  const baseA = "#1565c0";
-  const baseB = "#6a1b9a";
-  const baseC = "#2e7d32";
-  const base = t < 0.33 ? baseA : (t < 0.66 ? baseB : baseC);
-  return mix(base, "#ffffff", 0.10 + (t * 0.12));
+  return rgbToHex({
+    r: a.r + (b.r - a.r) * t,
+    g: a.g + (b.g - a.g) * t,
+    b: a.b + (b.b - a.b) * t,
+  });
 }
 
-let catColors = loadCatColors();
-function colorForCategory(cat) {
-  const c = String(cat || "").trim();
-  if (!c) return "#333";
-  if (!catColors[c]) {
-    catColors[c] = randomNiceColor(c);
-    saveCatColors(catColors);
-  }
-  return catColors[c];
+// “balans bieli”: lekkie ochłodzenie/ocieplenie bez zmiany hue (subtelnie)
+function coolWarmAdjust(hex, amt /* -1..+1 */) {
+  const { r, g, b } = hexToRgb(hex);
+  const a = clamp(amt, -1, 1);
+
+  // +a => chłodniej (więcej B), -a => cieplej (więcej R)
+  const rr = r + (-18 * a);
+  const bb = b + (18 * a);
+  const gg = g + (6 * a); // minimalnie, żeby nie robić zielonej dominacji
+
+  return rgbToHex({ r: rr, g: gg, b: bb });
 }
+
+// Subcategory shade:
+// - trzymamy “bazowy kolor” kategorii
+// - zmieniamy nasycenie przez mix z bielą / czernią
+// - balans bieli przez coolWarmAdjust
 function colorFor(cat, sub) {
-  const base = colorForCategory(cat);
+  const c = String(cat || "").trim();
   const s = String(sub || "").trim();
+
+  const base = baseColorForCategory(c);
+
   if (!s) return base;
-  const t = hashTo01(`${cat}::${s}`);
-  return t < 0.5 ? mix(base, "#fff", 0.18 + t * 0.22) : mix(base, "#000", 0.12 + (t - 0.5) * 0.22);
+
+  // deterministyczne parametry od subcategory
+  const h = hash32(`${c}::${s}`);
+  const t1 = (h % 1000) / 999;          // 0..1
+  const t2 = ((h >>> 10) % 1000) / 999; // 0..1
+
+  // “nasycenie”: jaśniej lub ciemniej (ale nie ekstremalnie)
+  // ~50% subów idzie w jaśniejsze warianty, ~50% w ciemniejsze
+  const lighten = t1 < 0.5;
+  const amt = lighten
+    ? (0.10 + t1 * 0.22)               // 0.10..0.21
+    : (0.06 + (t1 - 0.5) * 0.26);      // 0.06..0.19
+
+  let col = lighten ? mix(base, "#ffffff", amt) : mix(base, "#000000", amt);
+
+  // balans bieli: -0.7..+0.7
+  const wb = (t2 * 1.4) - 0.7;
+  col = coolWarmAdjust(col, wb);
+
+  return col;
 }
 
-// Map
+function baseColorForCategory(cat) {
+  const c = String(cat || "").trim();
+  if (!c) return "#333333";
+
+  if (CATEGORY_BASE_COLORS[c]) return CATEGORY_BASE_COLORS[c];
+
+  // fallback: deterministycznie wybieramy z EXTRA_CATEGORY_COLORS
+  const idx = hash32(c) % EXTRA_CATEGORY_COLORS.length;
+  return EXTRA_CATEGORY_COLORS[idx];
+}
+
+function colorForCategory(cat) {
+  return baseColorForCategory(cat);
+}
+
+// =========================
+// Leaflet map
+// =========================
 const map = L.map("map").setView([52.2297, 21.0122], 6);
 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 19,
@@ -111,7 +175,9 @@ document.getElementById("myLocBtn").onclick = () => {
   );
 };
 
+// =========================
 // Notes window
+// =========================
 const notesWin = document.getElementById("notesWin");
 const notesTitle = document.getElementById("notesTitle");
 const notesClose = document.getElementById("notesClose");
@@ -159,7 +225,6 @@ async function apiDeleteNote(id, idx) {
 }
 
 function renderNotes(notes) {
-  // signature, żeby nie przepisywać DOM bez sensu
   const sig = JSON.stringify(notes);
   if (sig === lastNotesSig) return;
   lastNotesSig = sig;
@@ -228,7 +293,9 @@ async function openNotesWin(id, name) {
   notesTimer = setInterval(refreshNotesNow, NOTES_REFRESH_MS);
 }
 
+// =========================
 // Layers / filters
+// =========================
 const layers = new Map();
 const enabled = new Map();
 const markers = new Map();
@@ -262,10 +329,12 @@ function addPoint(p) {
   ensureLayer(key);
 
   const col = colorFor(cat, sub);
+
   const m = L.circleMarker([p.lat, p.lng], {
     radius: 7, weight: 2,
     color: "rgba(0,0,0,0.35)",
-    fillColor: col, fillOpacity: 0.92,
+    fillColor: col,
+    fillOpacity: 0.92,
   });
 
   m.bindTooltip(esc(p.name), {
@@ -341,7 +410,6 @@ function addPoint(p) {
           box.style.display = "none";
           msg.textContent = "";
 
-          // JEŚLI OKNO NOTATEK OTWARTE NA TEN PUNKT -> ODŚWIEŻ
           if (activePointId === p.id && notesWin.style.display !== "none") {
             await refreshNotesNow();
           }
@@ -467,10 +535,9 @@ function updateLabelsVisibility() {
     }
   }
 }
-
 map.on("zoomend moveend", updateLabelsVisibility);
 
-// refresh blokujemy tylko gdy user edytuje inline notatkę (żeby nie znikło pole)
+// refresh blokujemy tylko gdy user edytuje inline notatkę
 function isInlineNoteOpen() {
   const inline = document.querySelector(".popupInlineNote");
   return inline && getComputedStyle(inline).display !== "none";
@@ -489,8 +556,6 @@ async function refresh() {
 
     renderFilters();
     updateLabelsVisibility();
-
-    // jeśli okno notatek otwarte — i tak sobie odświeża osobnym timerem
   } catch (e) {
     console.warn(e);
   }
