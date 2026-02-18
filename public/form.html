@@ -13,24 +13,18 @@
       <h1>Dodaj punkt</h1>
 
       <p class="small muted">
-        1) Nazwa miejsca<br>
-        2) Link z Google Maps (Udostępnij)<br>
-        3) Kategoria / podkategoria (możesz tworzyć własne podkategorie)<br>
-        4) Notatka (opcjonalnie)
+        Wklej link z Google Maps (Udostępnij). Obsługujemy też krótkie linki typu <code>share.google/…</code>.
       </p>
 
-      <div id="ok" class="small success" style="display:none; margin-bottom:10px;">
-        ✅ Zapisane! Punkt pojawi się na mapie za ~15 sekund.
-      </div>
+      <div id="ok" class="small success" style="display:none; margin-bottom:10px;"></div>
       <div id="err" class="small error" style="display:none; margin-bottom:10px;"></div>
 
-      <!-- Fallback działa bez JS -->
       <form id="f" method="post" action="/submit">
         <label>Nazwa miejsca</label>
-        <input name="name" required placeholder="np. Orlen A2, Parking S8, ..." />
+        <input name="name" id="name" required placeholder="np. Orlen A2, Parking S8, ..." />
 
         <label>Link Google Maps</label>
-        <input name="link" required placeholder="https://maps.app.goo.gl/..." />
+        <input name="link" id="link" required placeholder="https://share.google/... lub https://maps.app.goo.gl/..." />
 
         <label>Kategoria</label>
         <select name="category" id="category" required></select>
@@ -55,27 +49,19 @@
         </div>
 
         <label>Notatka (opcjonalnie)</label>
-        <input name="note" placeholder="np. kod do bramy, godziny, kontakt, uwagi..." />
+        <input name="note" id="note" placeholder="np. kod do bramy, godziny, kontakt, uwagi..." />
 
         <div class="row" style="margin-top:14px;">
-          <button class="btn" type="submit">Zapisz</button>
+          <button class="btn" type="submit" id="submitBtn">Zapisz</button>
           <a class="btn" href="/">Powrót do mapy</a>
         </div>
 
-        <div id="msg" class="small" style="margin-top:10px;"></div>
+        <div class="small muted" style="margin-top:10px;">
+          Tip: jeśli link z Google jest „dziwny”, wejdź w miejsce → naciśnij pinezkę → Udostępnij.
+        </div>
       </form>
     </div>
   </div>
-
-  <script>
-    const p = new URLSearchParams(location.search);
-    if (p.get("ok") === "1") document.getElementById("ok").style.display = "block";
-    if (p.get("err")) {
-      const el = document.getElementById("err");
-      el.textContent = decodeURIComponent(p.get("err"));
-      el.style.display = "block";
-    }
-  </script>
 
   <script src="/form.js"></script>
 </body>
