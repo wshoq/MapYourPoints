@@ -1,19 +1,40 @@
+const REFRESH_MS = 15000;
+
 const map = L.map("map").setView([52.2297, 21.0122], 6);
 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 19,
   attribution: "© OpenStreetMap",
 }).addTo(map);
 
-// ===== Panel minimalize =====
+// Panel
 const panel = document.getElementById("panel");
-const toggleBtn = document.getElementById("panelToggle");
-toggleBtn.onclick = () => {
-  panel.classList.toggle("isMin");
-};
+document.getElementById("panelToggle").onclick = () => panel.classList.toggle("isMin");
 
-// ===== Buttons =====
-const myLocBtn = document.getElementById("myLocBtn");
-myLocBtn.onclick = () => {
+// Moja lokalizacja
+let myMarker = null;
+let myCircle = null;
+function setMyLocation(lat, lng, accuracy) {
+  if (!myMarker) {
+    myMarker = L.circleMarker([lat, lng], {
+      radius: 7, weight: 2,
+      color: "rgba(0,0,0,0.4)", fillColor: "#000", fillOpacity: 0.9,
+    }).addTo(map);
+  } else myMarker.setLatLng([lat, lng]);
+
+  if (Number.isFinite(accuracy)) {
+    if (!myCircle) {
+      myCircle = L.circle([lat, lng], {
+        radius: Math.max(accuracy, 10),
+        weight: 1, color: "rgba(0,0,0,0.2)",
+        fillColor: "rgba(0,0,0,0.06)", fillOpacity: 1,
+      }).addTo(map);
+    } else {
+      myCircle.setLatLng([lat, lng]);
+      myCircle.setRadius(Math.max(accuracy, 10));
+    }
+  }
+}
+document.getElementById("myLocBtn").onclick = () => {
   if (!navigator.geolocation) return;
   navigator.geolocation.getCurrentPosition(
     (pos) => {
@@ -26,41 +47,7 @@ myLocBtn.onclick = () => {
   );
 };
 
-// ===== My location marker =====
-let myLocationMarker = null;
-let myAccuracyCircle = null;
-function setMyLocation(lat, lng, accuracy) {
-  if (!myLocationMarker) {
-    myLocationMarker = L.circleMarker([lat, lng], {
-      radius: 7,
-      weight: 2,
-      color: "rgba(0,0,0,0.4)",
-      fillColor: "#000",
-      fillOpacity: 0.9,
-    }).addTo(map);
-    myLocationMarker.bindPopup(`Ty (dokładność ~${Math.round(accuracy)}m)`);
-  } else {
-    myLocationMarker.setLatLng([lat, lng]);
-    myLocationMarker.setPopupContent(`Ty (dokładność ~${Math.round(accuracy)}m)`);
-  }
-
-  if (Number.isFinite(accuracy)) {
-    if (!myAccuracyCircle) {
-      myAccuracyCircle = L.circle([lat, lng], {
-        radius: Math.max(accuracy, 10),
-        weight: 1,
-        color: "rgba(0,0,0,0.2)",
-        fillColor: "rgba(0,0,0,0.06)",
-        fillOpacity: 1,
-      }).addTo(map);
-    } else {
-      myAccuracyCircle.setLatLng([lat, lng]);
-      myAccuracyCircle.setRadius(Math.max(accuracy, 10));
-    }
-  }
-}
-
-// ===== Notes UI =====
+// Notes panel UI
 const notesBox = document.getElementById("notesBox");
 const notesTitle = document.getElementById("notesTitle");
 const notesClose = document.getElementById("notesClose");
@@ -70,20 +57,37 @@ const notesList = document.getElementById("notesList");
 const notesStatus = document.getElementById("notesStatus");
 
 let activePointId = null;
-let activePointName = "";
+let activePointName = null;
 
 notesClose.onclick = () => {
   notesBox.style.display = "none";
   activePointId = null;
+  activePointName = null;
   notesInput.value = "";
   notesList.innerHTML = "";
   notesStatus.textContent = "";
 };
 
-async function fetchNotes(pointId) {
-  const res = await fetch(`/api/points/${encodeURIComponent(pointId)}/notes`, { cache: "no-store" });
+async function apiGetNotes(id) {
+  const res = await fetch(`/api/points/${encodeURIComponent(id)}/notes`, { cache: "no-store" });
   const data = await res.json();
   if (!data?.ok) throw new Error(data?.error || "Notes error");
+  return data.notes || [];
+}
+async function apiAddNote(id, text) {
+  const res = await fetch(`/api/points/${encodeURIComponent(id)}/notes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  const data = await res.json();
+  if (!data?.ok) throw new Error(data?.error || "Add failed");
+  return data.notes || [];
+}
+async function apiDeleteNote(id, idx) {
+  const res = await fetch(`/api/points/${encodeURIComponent(id)}/notes/${idx}`, { method: "DELETE" });
+  const data = await res.json();
+  if (!data?.ok) throw new Error(data?.error || "Delete failed");
   return data.notes || [];
 }
 
@@ -96,52 +100,45 @@ function renderNotes(notes) {
     notesList.appendChild(el);
     return;
   }
-
   notes.forEach((txt, idx) => {
     const row = document.createElement("div");
     row.className = "noteRow";
 
-    const pre = document.createElement("div");
-    pre.className = "noteText";
-    pre.textContent = txt;
+    const t = document.createElement("div");
+    t.className = "noteText";
+    t.textContent = txt;
 
     const del = document.createElement("button");
     del.className = "iconBtn";
-    del.title = "Usuń notatkę";
+    del.title = "Usuń";
     del.textContent = "🗑";
     del.onclick = async () => {
       try {
         notesStatus.textContent = "Usuwam…";
-        const res = await fetch(`/api/points/${encodeURIComponent(activePointId)}/notes/${idx}`, {
-          method: "DELETE",
-        });
-        const data = await res.json();
-        if (!data?.ok) throw new Error(data?.error || "Delete failed");
-        renderNotes(data.notes || []);
-        notesStatus.textContent = "✅ Usunięto";
-        setTimeout(() => (notesStatus.textContent = ""), 900);
+        const updated = await apiDeleteNote(activePointId, idx);
+        renderNotes(updated);
+        notesStatus.textContent = "";
       } catch (e) {
         notesStatus.textContent = `⚠️ ${e.message}`;
       }
     };
 
-    row.appendChild(pre);
+    row.appendChild(t);
     row.appendChild(del);
     notesList.appendChild(row);
   });
 }
 
-async function openNotes(pointId, pointName) {
-  activePointId = pointId;
-  activePointName = pointName;
-
-  notesTitle.textContent = `Notatki · ${pointName}`;
+async function openNotesPanel(id, name) {
+  activePointId = id;
+  activePointName = name;
+  notesTitle.textContent = `Notatki · ${name}`;
   notesBox.style.display = "block";
-  panel.classList.remove("isMin"); // rozwiń panel gdy wchodzimy w notatki
+  panel.classList.remove("isMin");
 
   try {
     notesStatus.textContent = "Ładuję…";
-    const notes = await fetchNotes(pointId);
+    const notes = await apiGetNotes(id);
     renderNotes(notes);
     notesStatus.textContent = "";
   } catch (e) {
@@ -151,28 +148,19 @@ async function openNotes(pointId, pointName) {
 
 notesAdd.onclick = async () => {
   const text = String(notesInput.value || "").trim();
-  if (!activePointId) return;
-  if (!text) return;
-
+  if (!activePointId || !text) return;
   try {
     notesStatus.textContent = "Zapisuję…";
-    const res = await fetch(`/api/points/${encodeURIComponent(activePointId)}/notes`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
-    });
-    const data = await res.json();
-    if (!data?.ok) throw new Error(data?.error || "Add failed");
+    const updated = await apiAddNote(activePointId, text);
     notesInput.value = "";
-    renderNotes(data.notes || []);
-    notesStatus.textContent = "✅ Dodano";
-    setTimeout(() => (notesStatus.textContent = ""), 900);
+    renderNotes(updated);
+    notesStatus.textContent = "";
   } catch (e) {
     notesStatus.textContent = `⚠️ ${e.message}`;
   }
 };
 
-// ===== Map markers + filters =====
+// Colors
 const BASE_COLORS = {
   "Stacja benzynowa": "#2e7d32",
   "Warsztat": "#ef6c00",
@@ -186,7 +174,6 @@ function esc(s) {
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[c]));
 }
-
 function hashTo01(str) {
   const s = String(str || "");
   let h = 2166136261;
@@ -214,16 +201,15 @@ function colorFor(category, subcategory) {
   return t < 0.5 ? mix(base, "#fff", 0.18 + t * 0.22) : mix(base, "#000", 0.12 + (t - 0.5) * 0.22);
 }
 
+// Layers / filters
 const layers = new Map();   // key -> layerGroup
 const enabled = new Map();  // key -> bool
-const markers = new Map();  // key -> markers
-
+const markers = new Map();  // key -> marker[]
 function keyOf(p) {
   const cat = String(p.category || "").trim();
   const sub = String(p.subcategory || "").trim();
   return `${cat}||${sub}`;
 }
-
 function ensureLayer(key) {
   if (!layers.has(key)) {
     const g = L.layerGroup().addTo(map);
@@ -232,7 +218,6 @@ function ensureLayer(key) {
     markers.set(key, []);
   }
 }
-
 function clearAll() {
   for (const [k, g] of layers.entries()) {
     g.clearLayers();
@@ -244,20 +229,18 @@ function addPoint(p) {
   const cat = String(p.category || "").trim();
   const sub = String(p.subcategory || "").trim();
   const note = String(p.note || "").trim();
+
   const key = keyOf(p);
   ensureLayer(key);
 
   const col = colorFor(cat, sub);
-
   const m = L.circleMarker([p.lat, p.lng], {
-    radius: 7,
-    weight: 2,
+    radius: 7, weight: 2,
     color: "rgba(0,0,0,0.35)",
-    fillColor: col,
-    fillOpacity: 0.92,
+    fillColor: col, fillOpacity: 0.92,
   });
 
-  // label (tylko przy zoom>=12 i małym zagęszczeniu)
+  // label (większy zasięg)
   m.bindTooltip(esc(p.name), {
     permanent: true,
     direction: "top",
@@ -277,22 +260,84 @@ function addPoint(p) {
     </div>
     <div class="popupActions">
       <a class="btn" href="${gmapsNav}" target="_blank" rel="noopener">Nawiguj</a>
-      <button class="btn" data-notes="1">Notatki</button>
+      <button class="btn" data-addnote="1">Dodaj notatkę</button>
+      <button class="btn" data-shownotes="1">Wyświetl notatki</button>
+    </div>
+
+    <div class="popupInlineNote" data-inline="1" style="display:none;">
+      <textarea placeholder="Wpisz notatkę…"></textarea>
+      <div class="row" style="gap:8px; margin-top:8px;">
+        <button class="btn" data-save="1">Zapisz</button>
+        <button class="btn" data-cancel="1">Anuluj</button>
+        <div class="small muted" data-msg="1"></div>
+      </div>
     </div>
   `;
 
   m.bindPopup(popup);
+
   m.on("popupopen", (e) => {
     const root = e.popup.getElement();
-    const btnNotes = root?.querySelector("button[data-notes]");
-    if (btnNotes) {
-      btnNotes.onclick = () => openNotes(p.id, p.name);
+    if (!root) return;
+
+    const btnAdd = root.querySelector("button[data-addnote]");
+    const btnShow = root.querySelector("button[data-shownotes]");
+    const box = root.querySelector("div[data-inline]");
+    const ta = box?.querySelector("textarea");
+    const btnSave = box?.querySelector("button[data-save]");
+    const btnCancel = box?.querySelector("button[data-cancel]");
+    const msg = box?.querySelector("div[data-msg]");
+
+    if (btnAdd && box) {
+      btnAdd.onclick = () => {
+        box.style.display = "block";
+        if (ta) ta.focus();
+      };
+    }
+
+    if (btnCancel && box) {
+      btnCancel.onclick = () => {
+        box.style.display = "none";
+        if (ta) ta.value = "";
+        if (msg) msg.textContent = "";
+      };
+    }
+
+    if (btnSave && ta && msg) {
+      btnSave.onclick = async () => {
+        const text = String(ta.value || "").trim();
+        if (!text) return;
+        msg.textContent = "Zapisuję…";
+        try {
+          await apiAddNote(p.id, text);
+          ta.value = "";
+          box.style.display = "none";
+          msg.textContent = "";
+        } catch (err) {
+          msg.textContent = `⚠️ ${err.message}`;
+        }
+      };
+    }
+
+    if (btnShow) {
+      btnShow.onclick = () => openNotesPanel(p.id, p.name);
     }
   });
 
   m.addTo(layers.get(key));
   markers.get(key).push(m);
+
   if (!enabled.get(key)) map.removeLayer(layers.get(key));
+}
+
+function countForCategory(cat) {
+  let n = 0;
+  for (const k of layers.keys()) {
+    const [c] = k.split("||");
+    if (c !== cat) continue;
+    n += (markers.get(k) || []).length;
+  }
+  return n;
 }
 
 function renderFilters() {
@@ -347,7 +392,7 @@ function renderFilters() {
       sw.style.background = colorFor(cat, sub);
 
       const name = document.createElement("span");
-      name.textContent = sub ? sub : "(bez podkategorii)";
+      name.textContent = sub ? sub : "(brak)";
 
       const cnt = document.createElement("span");
       cnt.className = "muted";
@@ -365,16 +410,6 @@ function renderFilters() {
   }
 }
 
-function countForCategory(cat) {
-  let n = 0;
-  for (const k of layers.keys()) {
-    const [c] = k.split("||");
-    if (c !== cat) continue;
-    n += (markers.get(k) || []).length;
-  }
-  return n;
-}
-
 function visibleMarkerCountInView() {
   const b = map.getBounds();
   let n = 0;
@@ -390,7 +425,9 @@ function visibleMarkerCountInView() {
 function updateLabelsVisibility() {
   const zoom = map.getZoom();
   const inView = visibleMarkerCountInView();
-  const show = (zoom >= 12) && (inView <= 80);
+
+  // wcześniej + większy limit
+  const show = (zoom >= 10) && (inView <= 160);
 
   for (const [k, isOn] of enabled.entries()) {
     const arr = markers.get(k) || [];
@@ -417,10 +454,9 @@ async function refresh() {
     renderFilters();
     updateLabelsVisibility();
   } catch (e) {
-    // celowo bez spamowania UI — panel ma być mały
     console.warn(e);
   }
 }
 
 refresh();
-setInterval(refresh, 15000);
+setInterval(refresh, REFRESH_MS);
