@@ -6,22 +6,22 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-app.use(express.json({ limit: "500kb" }));
+app.use(express.json({ limit: "800kb" }));
 app.use(express.urlencoded({ extended: true }));
 
-// ===== Airtable config (env) =====
+// ===== Airtable env =====
 const AIRTABLE_TOKEN = process.env.AIRTABLE_TOKEN;
 const BASE_ID = process.env.AIRTABLE_BASE_ID;
 const TABLE_ID = process.env.AIRTABLE_TABLE_ID;
 
 // ===== Airtable fields =====
 const FIELD_NAME = "Name";
-const FIELD_LAT = "Lattitude";     // literówka celowo
+const FIELD_LAT = "Lattitude";
 const FIELD_LNG = "Longitude";
 const FIELD_CAT = "Category";
 const FIELD_SUB = "Subcategory";
 const FIELD_NOTE = "Note";
-const FIELD_NOTES = "Notatki";     // NEW long text
+const FIELD_NOTES = "Notatki"; // new long text
 
 const CATEGORIES = [
   "Stacja benzynowa",
@@ -35,7 +35,7 @@ function isValidCategory(cat) {
   return CATEGORIES.includes(String(cat || "").trim());
 }
 
-// ---------- Maps link parsing ----------
+// ---------------- URL helpers ----------------
 function looksLikeHttpUrl(u) {
   try {
     const x = new URL(String(u));
@@ -57,23 +57,18 @@ function extractLatLngFromUrl(url) {
   const s = String(url || "").trim();
   let m;
 
-  // @lat,lng
   m = s.match(/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/);
   if (m) return { lat: Number(m[1]), lng: Number(m[2]) };
 
-  // ?q=lat,lng
   m = s.match(/[?&]q=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/);
   if (m) return { lat: Number(m[1]), lng: Number(m[2]) };
 
-  // /maps/search/lat,lng
   m = s.match(/\/maps\/search\/(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/);
   if (m) return { lat: Number(m[1]), lng: Number(m[2]) };
 
-  // !3dLAT!4dLNG
   m = s.match(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/);
   if (m) return { lat: Number(m[1]), lng: Number(m[2]) };
 
-  // destination=lat,lng
   m = s.match(/[?&](?:destination|query)=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/);
   if (m) return { lat: Number(m[1]), lng: Number(m[2]) };
 
@@ -92,22 +87,18 @@ function browserHeaders() {
 function extractMapsUrlFromHtml(html, baseUrl) {
   const s = String(html || "");
 
-  // canonical
   let m = s.match(/<link[^>]+rel=["']canonical["'][^>]+href=["']([^"']+)["']/i);
   if (m?.[1]) return resolveRelativeUrl(baseUrl, m[1].replace(/&amp;/g, "&"));
 
-  // meta refresh
   m = s.match(/http-equiv=["']refresh["'][^>]+content=["'][^"']*url=([^"']+)["']/i);
   if (m?.[1]) return resolveRelativeUrl(baseUrl, m[1].trim().replace(/&amp;/g, "&"));
 
-  // JS redirects
   m = s.match(/(?:window\.)?location(?:\.href)?\s*=\s*["']([^"']+)["']/i);
   if (m?.[1]) return resolveRelativeUrl(baseUrl, m[1].replace(/&amp;/g, "&"));
 
   m = s.match(/location\.replace\(\s*["']([^"']+)["']\s*\)/i);
   if (m?.[1]) return resolveRelativeUrl(baseUrl, m[1].replace(/&amp;/g, "&"));
 
-  // embedded URLs
   m = s.match(/https:\/\/www\.google\.com\/maps[^"'\s<]+/i);
   if (m) return m[0].replace(/&amp;/g, "&");
 
@@ -130,17 +121,11 @@ async function resolveRedirectChain(startUrl, maxHops = 10) {
     if (visited.includes(current)) break;
     visited.push(current);
 
-    if (extractLatLngFromUrl(current)) {
-      return { finalUrl: current, visited, lastHtml };
-    }
+    if (extractLatLngFromUrl(current)) return { finalUrl: current, visited, lastHtml };
 
-    const res = await fetch(current, {
-      method: "GET",
-      redirect: "manual",
-      headers: browserHeaders(),
-    });
-
+    const res = await fetch(current, { method: "GET", redirect: "manual", headers: browserHeaders() });
     const loc = res.headers.get("location");
+
     if (res.status >= 300 && res.status < 400 && loc) {
       current = resolveRelativeUrl(current, loc);
       continue;
@@ -158,7 +143,6 @@ async function resolveRedirectChain(startUrl, maxHops = 10) {
       }
     }
 
-    // google /url?q=...
     try {
       const u = new URL(current);
       if (u.hostname === "www.google.com" && u.pathname === "/url") {
@@ -180,32 +164,58 @@ async function resolveToMapsUrl(inputUrl) {
   const inUrl = String(inputUrl || "").trim();
   const { finalUrl, visited, lastHtml } = await resolveRedirectChain(inUrl, 10);
 
-  let coords = extractLatLngFromUrl(finalUrl);
-
-  if (!coords && lastHtml) {
+  if (lastHtml) {
     const maybe = extractMapsUrlFromHtml(lastHtml, finalUrl);
     if (maybe) {
       const again = await resolveRedirectChain(maybe, 6);
-      coords = extractLatLngFromUrl(again.finalUrl) || extractLatLngFromUrl(maybe);
-      if (coords) return { mapsUrl: again.finalUrl, finalUrl: again.finalUrl, visited: [...visited, ...again.visited] };
+      return { mapsUrl: again.finalUrl || maybe, finalUrl: again.finalUrl || maybe, visited: [...visited, ...again.visited] };
     }
   }
 
   return { mapsUrl: finalUrl, finalUrl, visited };
 }
 
-// ---------- Airtable ----------
+// ---------------- Address geocoding (Nominatim) ----------------
+async function geocodeAddress(query) {
+  const q = String(query || "").trim();
+  if (!q) return null;
+
+  // Nominatim policy: include UA; don't spam (u Was to "secondary" — tu 1 request per submit)
+  const url =
+    "https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&addressdetails=0&q=" +
+    encodeURIComponent(q);
+
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent": "MapYourPoints/1.0",
+      "Accept-Language": "pl,en",
+    },
+  });
+
+  if (!res.ok) return null;
+  const data = await res.json().catch(() => null);
+  const hit = Array.isArray(data) ? data[0] : null;
+  if (!hit) return null;
+
+  const lat = Number(hit.lat);
+  const lng = Number(hit.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+
+  return { lat, lng, provider: "nominatim" };
+}
+
+// ---------------- Airtable ----------------
 async function airtableRequest(method, pathPart, body) {
-  if (!AIRTABLE_TOKEN) throw new Error("Missing AIRTABLE_TOKEN (env)");
-  if (!BASE_ID) throw new Error("Missing AIRTABLE_BASE_ID (env)");
-  if (!TABLE_ID) throw new Error("Missing AIRTABLE_TABLE_ID (env)");
+  if (!AIRTABLE_TOKEN) throw new Error("Missing AIRTABLE_TOKEN");
+  if (!BASE_ID) throw new Error("Missing AIRTABLE_BASE_ID");
+  if (!TABLE_ID) throw new Error("Missing AIRTABLE_TABLE_ID");
 
   const url = `https://api.airtable.com/v0/${BASE_ID}/${pathPart}`;
   const res = await fetch(url, {
     method,
     headers: {
       Authorization: `Bearer ${AIRTABLE_TOKEN}`,
-      "Content-Type": "application/json",
+      "Content-Type": "application/json; charset=utf-8",
     },
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -225,12 +235,26 @@ async function airtableUpdateRecord(recordId, fields) {
   return airtableRequest("PATCH", `${TABLE_ID}/${recordId}`, { fields });
 }
 
-// ---------- Static ----------
+// ---------------- Notes helpers ----------------
+function splitNotes(raw) {
+  const txt = String(raw || "").trim();
+  if (!txt) return [];
+  return txt.split("\n---\n").map(s => s.trim()).filter(Boolean);
+}
+function joinNotes(list) {
+  return list.map(s => String(s).trim()).filter(Boolean).join("\n---\n");
+}
+function stamp() {
+  const d = new Date();
+  return d.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+// ---------------- Static ----------------
 app.use(express.static(path.join(__dirname, "public"), { etag: false, maxAge: "0" }));
 app.get("/", (req, res) => res.sendFile(path.join(__dirname, "public/index.html")));
 app.get("/form", (req, res) => res.sendFile(path.join(__dirname, "public/form.html")));
 
-// ---------- API: list points ----------
+// ---------------- API: points ----------------
 app.get("/api/points", async (req, res) => {
   try {
     const maxRecords = Math.min(Number(req.query.max || 2000), 5000);
@@ -248,7 +272,6 @@ app.get("/api/points", async (req, res) => {
           subcategory: String(f[FIELD_SUB] || "").trim(),
           note: String(f[FIELD_NOTE] || "").trim(),
           notatki: String(f[FIELD_NOTES] || "").trim(),
-          createdTime: r.createdTime,
         };
       })
       .filter((p) => p.name && Number.isFinite(p.lat) && Number.isFinite(p.lng) && p.category);
@@ -259,24 +282,42 @@ app.get("/api/points", async (req, res) => {
   }
 });
 
-// ---------- API: submit ----------
+// ---------------- API: submit (link OR address) ----------------
 async function handleSubmitCore(body) {
   const name = String(body.name || "").trim();
-  const link = String(body.link || "").trim();
+  const linkOrAddr = String(body.link || "").trim(); // now can be address too
   const category = String(body.category || "").trim();
-  const subcategory = String(body.subcategory || "").trim(); // <- TU MA BYĆ TEKST
+  const subcategory = String(body.subcategory || "").trim();
   const note = String(body.note || "").trim();
 
-  if (!name) return { ok: false, status: 400, error: "Missing name" };
-  if (!isValidCategory(category)) return { ok: false, status: 400, error: "Invalid category" };
-  if (!link) return { ok: false, status: 400, error: "Missing google maps link" };
+  if (!name) return { ok: false, status: 400, error: "Brak nazwy" };
+  if (!isValidCategory(category)) return { ok: false, status: 400, error: "Nieprawidłowa kategoria" };
+  if (!linkOrAddr) return { ok: false, status: 400, error: "Brak linku lub adresu" };
 
-  const { mapsUrl, finalUrl, visited } = await resolveToMapsUrl(link);
-  const debug = { mapsUrl, finalUrl, visited };
+  let coords = null;
+  let debug = {};
 
-  const coords = extractLatLngFromUrl(mapsUrl) || extractLatLngFromUrl(finalUrl) || extractLatLngFromUrl(link);
+  if (looksLikeHttpUrl(linkOrAddr)) {
+    const { mapsUrl, finalUrl, visited } = await resolveToMapsUrl(linkOrAddr);
+    debug = { mode: "url", mapsUrl, finalUrl, visited };
+
+    coords =
+      extractLatLngFromUrl(mapsUrl) ||
+      extractLatLngFromUrl(finalUrl) ||
+      extractLatLngFromUrl(linkOrAddr);
+  } else {
+    const geo = await geocodeAddress(linkOrAddr);
+    debug = { mode: "address", query: linkOrAddr, provider: geo?.provider || null };
+    if (geo) coords = { lat: geo.lat, lng: geo.lng };
+  }
+
   if (!coords || !Number.isFinite(coords.lat) || !Number.isFinite(coords.lng)) {
-    return { ok: false, status: 400, error: "Nie udało się wyciągnąć współrzędnych z linku.", debug };
+    return {
+      ok: false,
+      status: 400,
+      error: "Nie udało się wyciągnąć współrzędnych. Wklej link z Google Maps albo pełny adres.",
+      debug,
+    };
   }
 
   const payload = {
@@ -285,7 +326,7 @@ async function handleSubmitCore(body) {
         fields: {
           [FIELD_NAME]: name,
           [FIELD_CAT]: category,
-          [FIELD_SUB]: subcategory, // <- zapisujemy string
+          [FIELD_SUB]: subcategory, // <-- zapisujemy
           [FIELD_NOTE]: note,
           [FIELD_LAT]: String(coords.lat),
           [FIELD_LNG]: String(coords.lng),
@@ -308,24 +349,7 @@ app.post("/api/submit", async (req, res) => {
   }
 });
 
-// ---------- Notes API ----------
-function splitNotes(raw) {
-  const txt = String(raw || "").trim();
-  if (!txt) return [];
-  return txt.split("\n---\n").map(s => s.trim()).filter(Boolean);
-}
-
-function joinNotes(list) {
-  return list.map(s => String(s).trim()).filter(Boolean).join("\n---\n");
-}
-
-function stamp() {
-  const d = new Date();
-  // ISO bez ms
-  return d.toISOString().replace(/\.\d{3}Z$/, "Z");
-}
-
-// list notes
+// ---------------- Notes API: list/add/delete ----------------
 app.get("/api/points/:id/notes", async (req, res) => {
   try {
     const id = String(req.params.id || "").trim();
@@ -341,29 +365,26 @@ app.get("/api/points/:id/notes", async (req, res) => {
   }
 });
 
-// add note
 app.post("/api/points/:id/notes", async (req, res) => {
   try {
     const id = String(req.params.id || "").trim();
     const text = String(req.body?.text || "").trim();
     if (!id) return res.status(400).json({ ok: false, error: "Missing id" });
-    if (!text) return res.status(400).json({ ok: false, error: "Empty note" });
+    if (!text) return res.status(400).json({ ok: false, error: "Pusta notatka" });
 
     const rec = await airtableRequest("GET", `${TABLE_ID}/${id}`, null);
     const raw = String(rec?.fields?.[FIELD_NOTES] || "");
     const list = splitNotes(raw);
 
     list.unshift(`[${stamp()}] ${text}`);
-    const updated = joinNotes(list);
+    await airtableUpdateRecord(id, { [FIELD_NOTES]: joinNotes(list) });
 
-    await airtableUpdateRecord(id, { [FIELD_NOTES]: updated });
     res.json({ ok: true, notes: list });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e.message || e) });
   }
 });
 
-// delete note by index
 app.delete("/api/points/:id/notes/:idx", async (req, res) => {
   try {
     const id = String(req.params.id || "").trim();
@@ -378,9 +399,8 @@ app.delete("/api/points/:id/notes/:idx", async (req, res) => {
     if (idx >= list.length) return res.status(400).json({ ok: false, error: "Idx out of range" });
 
     list.splice(idx, 1);
-    const updated = joinNotes(list);
+    await airtableUpdateRecord(id, { [FIELD_NOTES]: joinNotes(list) });
 
-    await airtableUpdateRecord(id, { [FIELD_NOTES]: updated });
     res.json({ ok: true, notes: list });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e.message || e) });
