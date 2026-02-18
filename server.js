@@ -23,7 +23,7 @@ const FIELD_SUB = "Subcategory";
 const FIELD_NOTE = "Note";
 const FIELD_NOTES = "Notatki";
 
-// Default (opcjonalne) — żeby startowo coś było
+// Default (opcjonalne) — żeby /api/meta miało startowo coś
 const DEFAULT_CATEGORIES = [
   "Stacja benzynowa",
   "Warsztat",
@@ -48,6 +48,10 @@ function resolveRelativeUrl(base, maybeRel) {
     return maybeRel;
   }
 }
+
+/**
+ * Wyciąga koordy z URL jeśli są w środku.
+ */
 function extractLatLngFromUrl(url) {
   const s = String(url || "").trim();
   let m;
@@ -61,11 +65,44 @@ function extractLatLngFromUrl(url) {
   m = s.match(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/);
   if (m) return { lat: Number(m[1]), lng: Number(m[2]) };
 
-  m = s.match(/[?&](?:destination|query)=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/);
+  m = s.match(/[?&](?:destination|query|center|ll)=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/);
   if (m) return { lat: Number(m[1]), lng: Number(m[2]) };
 
   return null;
 }
+
+/**
+ * NOWE: Google często NIE ma koordów w URL,
+ * ale ma je w HTML (np. og:image -> staticmap?center=lat,lng).
+ * Tu próbujemy je wydłubać.
+ */
+function extractLatLngFromHtml(html) {
+  const s = String(html || "");
+  let m;
+
+  // 1) og:image / staticmap center=lat,lng
+  m = s.match(/staticmap\?[^"']*center=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/i);
+  if (m) return { lat: Number(m[1]), lng: Number(m[2]) };
+
+  // 2) center=lat,lng gdziekolwiek w HTML (dość częste)
+  m = s.match(/center=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/i);
+  if (m) return { lat: Number(m[1]), lng: Number(m[2]) };
+
+  // 3) ll=lat,lng (czasem w parametrach)
+  m = s.match(/ll=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/i);
+  if (m) return { lat: Number(m[1]), lng: Number(m[2]) };
+
+  // 4) @lat,lng w HTML (czasem jest w canonical/hrefach)
+  m = s.match(/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/);
+  if (m) return { lat: Number(m[1]), lng: Number(m[2]) };
+
+  // 5) !3d..!4d.. w HTML
+  m = s.match(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/);
+  if (m) return { lat: Number(m[1]), lng: Number(m[2]) };
+
+  return null;
+}
+
 function browserHeaders() {
   return {
     "User-Agent":
@@ -74,6 +111,7 @@ function browserHeaders() {
     "Accept-Language": "pl-PL,pl;q=0.9,en;q=0.8",
   };
 }
+
 function extractMapsUrlFromHtml(html, baseUrl) {
   const s = String(html || "");
 
@@ -95,12 +133,20 @@ function extractMapsUrlFromHtml(html, baseUrl) {
   m = s.match(/https:\/\/maps\.app\.goo\.gl\/[^"'\s<]+/i);
   if (m) return m[0].replace(/&amp;/g, "&");
 
+  m = s.match(/https:\/\/share\.google\/[^"'\s<]+/i);
+  if (m) return m[0].replace(/&amp;/g, "&");
+
   m = s.match(/https:\/\/www\.google\.com\/url\?[^"'\s<]+/i);
   if (m) return m[0].replace(/&amp;/g, "&");
 
   return null;
 }
-async function resolveRedirectChain(startUrl, maxHops = 10) {
+
+/**
+ * Robust redirect + HTML parse.
+ * Zwraca finalUrl + lastHtml (jeśli była strona HTML).
+ */
+async function resolveRedirectChain(startUrl, maxHops = 12) {
   let current = String(startUrl || "").trim();
   const visited = [];
   let lastHtml = null;
@@ -110,11 +156,13 @@ async function resolveRedirectChain(startUrl, maxHops = 10) {
     if (visited.includes(current)) break;
     visited.push(current);
 
+    // jeśli już w URL są koordy — koniec
     if (extractLatLngFromUrl(current)) return { finalUrl: current, visited, lastHtml };
 
     const res = await fetch(current, { method: "GET", redirect: "manual", headers: browserHeaders() });
     const loc = res.headers.get("location");
 
+    // redirect
     if (res.status >= 300 && res.status < 400 && loc) {
       current = resolveRelativeUrl(current, loc);
       continue;
@@ -124,6 +172,13 @@ async function resolveRedirectChain(startUrl, maxHops = 10) {
     if (ctype.includes("text/html")) {
       const html = await res.text();
       lastHtml = html;
+
+      // jeśli z HTML da się wyciągnąć koordy — kończymy tu (finalUrl zostaje)
+      if (extractLatLngFromHtml(html)) {
+        return { finalUrl: current, visited, lastHtml };
+      }
+
+      // może w HTML jest link do właściwego maps URL
       const fromHtml = extractMapsUrlFromHtml(html, current);
       if (fromHtml && fromHtml !== current) {
         current = fromHtml;
@@ -131,6 +186,7 @@ async function resolveRedirectChain(startUrl, maxHops = 10) {
       }
     }
 
+    // google url wrapper
     try {
       const u = new URL(current);
       if (u.hostname === "www.google.com" && u.pathname === "/url") {
@@ -147,18 +203,25 @@ async function resolveRedirectChain(startUrl, maxHops = 10) {
 
   return { finalUrl: current, visited, lastHtml };
 }
-async function resolveToMapsUrl(inputUrl) {
-  const inUrl = String(inputUrl || "").trim();
-  const { finalUrl, visited, lastHtml } = await resolveRedirectChain(inUrl, 10);
 
-  if (lastHtml) {
-    const maybe = extractMapsUrlFromHtml(lastHtml, finalUrl);
-    if (maybe) {
-      const again = await resolveRedirectChain(maybe, 6);
-      return { mapsUrl: again.finalUrl || maybe, finalUrl: again.finalUrl || maybe, visited: [...visited, ...again.visited] };
+async function resolveToFinal(url) {
+  const inUrl = String(url || "").trim();
+  const first = await resolveRedirectChain(inUrl, 12);
+
+  // jeśli mamy HTML i jest tam “maps url”, spróbuj jeszcze raz
+  if (first.lastHtml) {
+    const maybe = extractMapsUrlFromHtml(first.lastHtml, first.finalUrl);
+    if (maybe && maybe !== first.finalUrl) {
+      const second = await resolveRedirectChain(maybe, 10);
+      return {
+        finalUrl: second.finalUrl || maybe,
+        visited: [...first.visited, ...(second.visited || [])],
+        lastHtml: second.lastHtml || first.lastHtml,
+      };
     }
   }
-  return { mapsUrl: finalUrl, finalUrl, visited };
+
+  return first;
 }
 
 // ---------------- Address geocoding (Nominatim) ----------------
@@ -309,15 +372,27 @@ async function handleSubmitCore(body) {
   let coords = null;
 
   if (looksLikeHttpUrl(linkOrAddr)) {
-    const { mapsUrl, finalUrl } = await resolveToMapsUrl(linkOrAddr);
-    coords = extractLatLngFromUrl(mapsUrl) || extractLatLngFromUrl(finalUrl) || extractLatLngFromUrl(linkOrAddr);
+    const { finalUrl, lastHtml } = await resolveToFinal(linkOrAddr);
+
+    // 1) URL
+    coords = extractLatLngFromUrl(finalUrl) || extractLatLngFromUrl(linkOrAddr);
+
+    // 2) HTML (NOWE)
+    if (!coords && lastHtml) {
+      coords = extractLatLngFromHtml(lastHtml);
+    }
   } else {
     const geo = await geocodeAddress(linkOrAddr);
     if (geo) coords = { lat: geo.lat, lng: geo.lng };
   }
 
   if (!coords || !Number.isFinite(coords.lat) || !Number.isFinite(coords.lng)) {
-    return { ok: false, status: 400, error: "Nie udało się wyciągnąć współrzędnych. Wklej link z Google Maps albo pełny adres." };
+    return {
+      ok: false,
+      status: 400,
+      error:
+        "Nie udało się wyciągnąć współrzędnych. Wklej link z Google Maps / Udostępnij lub pełny adres.",
+    };
   }
 
   const payload = {
@@ -356,7 +431,7 @@ app.get("/api/points/:id/notes", async (req, res) => {
     if (!id) return res.status(400).json({ ok: false, error: "Missing id" });
 
     const rec = await airtableRequest("GET", `${TABLE_ID}/${id}`, null);
-    const raw = String(rec?.fields?.["Notatki"] || "");
+    const raw = String(rec?.fields?.[FIELD_NOTES] || "");
     res.json({ ok: true, notes: splitNotes(raw) });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e.message || e) });
@@ -371,10 +446,10 @@ app.post("/api/points/:id/notes", async (req, res) => {
     if (!text) return res.status(400).json({ ok: false, error: "Pusta notatka" });
 
     const rec = await airtableRequest("GET", `${TABLE_ID}/${id}`, null);
-    const raw = String(rec?.fields?.["Notatki"] || "");
+    const raw = String(rec?.fields?.[FIELD_NOTES] || "");
     const list = splitNotes(raw);
 
-    list.unshift(text); // bez timestampu
+    list.unshift(text);
     await airtableUpdateRecord(id, { [FIELD_NOTES]: joinNotes(list) });
 
     res.json({ ok: true, notes: list });
@@ -391,7 +466,7 @@ app.delete("/api/points/:id/notes/:idx", async (req, res) => {
     if (!Number.isInteger(idx) || idx < 0) return res.status(400).json({ ok: false, error: "Bad idx" });
 
     const rec = await airtableRequest("GET", `${TABLE_ID}/${id}`, null);
-    const raw = String(rec?.fields?.["Notatki"] || "");
+    const raw = String(rec?.fields?.[FIELD_NOTES] || "");
     const list = splitNotes(raw);
 
     if (idx >= list.length) return res.status(400).json({ ok: false, error: "Idx out of range" });
