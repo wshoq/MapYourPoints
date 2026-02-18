@@ -47,12 +47,10 @@ document.getElementById("myLocBtn").onclick = () => {
   );
 };
 
-// Notes panel UI
+// Notes panel UI (tylko podgląd)
 const notesBox = document.getElementById("notesBox");
 const notesTitle = document.getElementById("notesTitle");
 const notesClose = document.getElementById("notesClose");
-const notesInput = document.getElementById("notesInput");
-const notesAdd = document.getElementById("notesAdd");
 const notesList = document.getElementById("notesList");
 const notesStatus = document.getElementById("notesStatus");
 
@@ -63,7 +61,6 @@ notesClose.onclick = () => {
   notesBox.style.display = "none";
   activePointId = null;
   activePointName = null;
-  notesInput.value = "";
   notesList.innerHTML = "";
   notesStatus.textContent = "";
 };
@@ -146,20 +143,6 @@ async function openNotesPanel(id, name) {
   }
 }
 
-notesAdd.onclick = async () => {
-  const text = String(notesInput.value || "").trim();
-  if (!activePointId || !text) return;
-  try {
-    notesStatus.textContent = "Zapisuję…";
-    const updated = await apiAddNote(activePointId, text);
-    notesInput.value = "";
-    renderNotes(updated);
-    notesStatus.textContent = "";
-  } catch (e) {
-    notesStatus.textContent = `⚠️ ${e.message}`;
-  }
-};
-
 // Colors
 const BASE_COLORS = {
   "Stacja benzynowa": "#2e7d32",
@@ -202,9 +185,10 @@ function colorFor(category, subcategory) {
 }
 
 // Layers / filters
-const layers = new Map();   // key -> layerGroup
-const enabled = new Map();  // key -> bool
-const markers = new Map();  // key -> marker[]
+const layers = new Map();
+const enabled = new Map();
+const markers = new Map();
+
 function keyOf(p) {
   const cat = String(p.category || "").trim();
   const sub = String(p.subcategory || "").trim();
@@ -240,7 +224,7 @@ function addPoint(p) {
     fillColor: col, fillOpacity: 0.92,
   });
 
-  // label (większy zasięg)
+  // label
   m.bindTooltip(esc(p.name), {
     permanent: true,
     direction: "top",
@@ -319,14 +303,11 @@ function addPoint(p) {
       };
     }
 
-    if (btnShow) {
-      btnShow.onclick = () => openNotesPanel(p.id, p.name);
-    }
+    if (btnShow) btnShow.onclick = () => openNotesPanel(p.id, p.name);
   });
 
   m.addTo(layers.get(key));
   markers.get(key).push(m);
-
   if (!enabled.get(key)) map.removeLayer(layers.get(key));
 }
 
@@ -426,7 +407,6 @@ function updateLabelsVisibility() {
   const zoom = map.getZoom();
   const inView = visibleMarkerCountInView();
 
-  // wcześniej + większy limit
   const show = (zoom >= 10) && (inView <= 160);
 
   for (const [k, isOn] of enabled.entries()) {
@@ -442,8 +422,25 @@ function updateLabelsVisibility() {
 
 map.on("zoomend moveend", updateLabelsVisibility);
 
+// --- blokada refresh gdy user w interakcji ---
+function isUserInteracting() {
+  // otwarty popup
+  if (document.querySelector(".leaflet-popup")) return true;
+
+  // inline notatka widoczna
+  const inline = document.querySelector(".popupInlineNote");
+  if (inline && getComputedStyle(inline).display !== "none") return true;
+
+  // panel notatek otwarty
+  if (notesBox && getComputedStyle(notesBox).display !== "none") return true;
+
+  return false;
+}
+
 async function refresh() {
   try {
+    if (isUserInteracting()) return;
+
     const res = await fetch("/api/points?max=5000", { cache: "no-store" });
     const data = await res.json();
     if (!data?.ok) throw new Error(data?.error || "Bad response");
