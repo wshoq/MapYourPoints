@@ -1,5 +1,69 @@
 const REFRESH_MS = 15000;
+const NOTES_REFRESH_MS = 5000;
 
+const LS_CAT_COLORS = "mapyourpoints_cat_colors_v1";
+
+function loadCatColors() {
+  try { return JSON.parse(localStorage.getItem(LS_CAT_COLORS) || "{}") || {}; }
+  catch { return {}; }
+}
+function saveCatColors(obj) {
+  localStorage.setItem(LS_CAT_COLORS, JSON.stringify(obj || {}));
+}
+function esc(s) {
+  return String(s || "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+function hashTo01(str) {
+  const s = String(str || "");
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return ((h >>> 0) % 1000) / 999;
+}
+function hexToRgb(hex) {
+  const m = String(hex).replace("#", "");
+  const n = parseInt(m.length === 3 ? m.split("").map(x => x + x).join("") : m, 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+function rgbToHex({ r, g, b }) {
+  const to = (x) => x.toString(16).padStart(2, "0");
+  return `#${to(Math.max(0, Math.min(255, r)))}${to(Math.max(0, Math.min(255, g)))}${to(Math.max(0, Math.min(255, b)))}`;
+}
+function mix(c1, c2, t) {
+  const a = hexToRgb(c1), b = hexToRgb(c2);
+  return rgbToHex({ r: Math.round(a.r + (b.r - a.r) * t), g: Math.round(a.g + (b.g - a.g) * t), b: Math.round(a.b + (b.b - a.b) * t) });
+}
+function randomNiceColor(seedStr) {
+  // deterministyczny “random” po nazwie
+  const t = hashTo01(seedStr);
+  // prosta paleta w hexach przez miksowanie
+  const baseA = "#1565c0";
+  const baseB = "#6a1b9a";
+  const baseC = "#2e7d32";
+  const base = t < 0.33 ? baseA : (t < 0.66 ? baseB : baseC);
+  return mix(base, "#ffffff", 0.10 + (t * 0.12));
+}
+
+let catColors = loadCatColors();
+function colorForCategory(cat) {
+  const c = String(cat || "").trim();
+  if (!c) return "#333";
+  if (!catColors[c]) {
+    catColors[c] = randomNiceColor(c);
+    saveCatColors(catColors);
+  }
+  return catColors[c];
+}
+function colorFor(cat, sub) {
+  const base = colorForCategory(cat);
+  const s = String(sub || "").trim();
+  if (!s) return base;
+  const t = hashTo01(`${cat}::${s}`);
+  return t < 0.5 ? mix(base, "#fff", 0.18 + t * 0.22) : mix(base, "#000", 0.12 + (t - 0.5) * 0.22);
+}
+
+// Map
 const map = L.map("map").setView([52.2297, 21.0122], 6);
 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 19,
@@ -10,7 +74,7 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
 const panel = document.getElementById("panel");
 document.getElementById("panelToggle").onclick = () => panel.classList.toggle("isMin");
 
-// Moja lokalizacja
+// My location
 let myMarker = null;
 let myCircle = null;
 function setMyLocation(lat, lng, accuracy) {
@@ -47,8 +111,8 @@ document.getElementById("myLocBtn").onclick = () => {
   );
 };
 
-// Notes panel UI (tylko podgląd)
-const notesBox = document.getElementById("notesBox");
+// Notes window
+const notesWin = document.getElementById("notesWin");
 const notesTitle = document.getElementById("notesTitle");
 const notesClose = document.getElementById("notesClose");
 const notesList = document.getElementById("notesList");
@@ -56,14 +120,20 @@ const notesStatus = document.getElementById("notesStatus");
 
 let activePointId = null;
 let activePointName = null;
+let notesTimer = null;
+let lastNotesSig = "";
 
-notesClose.onclick = () => {
-  notesBox.style.display = "none";
+notesClose.onclick = () => closeNotesWin();
+
+function closeNotesWin() {
+  notesWin.style.display = "none";
   activePointId = null;
   activePointName = null;
   notesList.innerHTML = "";
   notesStatus.textContent = "";
-};
+  lastNotesSig = "";
+  if (notesTimer) { clearInterval(notesTimer); notesTimer = null; }
+}
 
 async function apiGetNotes(id) {
   const res = await fetch(`/api/points/${encodeURIComponent(id)}/notes`, { cache: "no-store" });
@@ -89,6 +159,11 @@ async function apiDeleteNote(id, idx) {
 }
 
 function renderNotes(notes) {
+  // signature, żeby nie przepisywać DOM bez sensu
+  const sig = JSON.stringify(notes);
+  if (sig === lastNotesSig) return;
+  lastNotesSig = sig;
+
   notesList.innerHTML = "";
   if (!notes.length) {
     const el = document.createElement("div");
@@ -113,8 +188,8 @@ function renderNotes(notes) {
       try {
         notesStatus.textContent = "Usuwam…";
         const updated = await apiDeleteNote(activePointId, idx);
-        renderNotes(updated);
         notesStatus.textContent = "";
+        renderNotes(updated);
       } catch (e) {
         notesStatus.textContent = `⚠️ ${e.message}`;
       }
@@ -126,62 +201,31 @@ function renderNotes(notes) {
   });
 }
 
-async function openNotesPanel(id, name) {
+async function refreshNotesNow() {
+  if (!activePointId) return;
+  try {
+    const notes = await apiGetNotes(activePointId);
+    renderNotes(notes);
+  } catch {}
+}
+
+async function openNotesWin(id, name) {
   activePointId = id;
   activePointName = name;
   notesTitle.textContent = `Notatki · ${name}`;
-  notesBox.style.display = "block";
-  panel.classList.remove("isMin");
+  notesWin.style.display = "block";
 
+  notesStatus.textContent = "Ładuję…";
   try {
-    notesStatus.textContent = "Ładuję…";
     const notes = await apiGetNotes(id);
-    renderNotes(notes);
     notesStatus.textContent = "";
+    renderNotes(notes);
   } catch (e) {
     notesStatus.textContent = `⚠️ ${e.message}`;
   }
-}
 
-// Colors
-const BASE_COLORS = {
-  "Stacja benzynowa": "#2e7d32",
-  "Warsztat": "#ef6c00",
-  "Parking": "#1565c0",
-  "Ważne Miejsce": "#6a1b9a",
-  "Agencja celna / weterynarz": "#8d6e63",
-};
-
-function esc(s) {
-  return String(s || "").replace(/[&<>"']/g, (c) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-  }[c]));
-}
-function hashTo01(str) {
-  const s = String(str || "");
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
-  return ((h >>> 0) % 1000) / 999;
-}
-function hexToRgb(hex) {
-  const m = String(hex).replace("#", "");
-  const n = parseInt(m.length === 3 ? m.split("").map(x => x + x).join("") : m, 16);
-  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
-}
-function rgbToHex({ r, g, b }) {
-  const to = (x) => x.toString(16).padStart(2, "0");
-  return `#${to(Math.max(0, Math.min(255, r)))}${to(Math.max(0, Math.min(255, g)))}${to(Math.max(0, Math.min(255, b)))}`;
-}
-function mix(c1, c2, t) {
-  const a = hexToRgb(c1), b = hexToRgb(c2);
-  return rgbToHex({ r: Math.round(a.r + (b.r - a.r) * t), g: Math.round(a.g + (b.g - a.g) * t), b: Math.round(a.b + (b.b - a.b) * t) });
-}
-function colorFor(category, subcategory) {
-  const base = BASE_COLORS[category] || "#333";
-  const sub = String(subcategory || "").trim();
-  if (!sub) return base;
-  const t = hashTo01(`${category}::${sub}`);
-  return t < 0.5 ? mix(base, "#fff", 0.18 + t * 0.22) : mix(base, "#000", 0.12 + (t - 0.5) * 0.22);
+  if (notesTimer) clearInterval(notesTimer);
+  notesTimer = setInterval(refreshNotesNow, NOTES_REFRESH_MS);
 }
 
 // Layers / filters
@@ -224,7 +268,6 @@ function addPoint(p) {
     fillColor: col, fillOpacity: 0.92,
   });
 
-  // label
   m.bindTooltip(esc(p.name), {
     permanent: true,
     direction: "top",
@@ -297,17 +340,23 @@ function addPoint(p) {
           ta.value = "";
           box.style.display = "none";
           msg.textContent = "";
+
+          // JEŚLI OKNO NOTATEK OTWARTE NA TEN PUNKT -> ODŚWIEŻ
+          if (activePointId === p.id && notesWin.style.display !== "none") {
+            await refreshNotesNow();
+          }
         } catch (err) {
           msg.textContent = `⚠️ ${err.message}`;
         }
       };
     }
 
-    if (btnShow) btnShow.onclick = () => openNotesPanel(p.id, p.name);
+    if (btnShow) btnShow.onclick = () => openNotesWin(p.id, p.name);
   });
 
   m.addTo(layers.get(key));
   markers.get(key).push(m);
+
   if (!enabled.get(key)) map.removeLayer(layers.get(key));
 }
 
@@ -341,7 +390,7 @@ function renderFilters() {
 
     const summary = document.createElement("summary");
     summary.innerHTML = `
-      <span class="swatch" style="background:${colorFor(cat, "")}"></span>
+      <span class="swatch" style="background:${colorForCategory(cat)}"></span>
       <span>${esc(cat)}</span>
       <span class="muted" style="margin-left:auto;">${countForCategory(cat)}</span>
     `;
@@ -406,7 +455,6 @@ function visibleMarkerCountInView() {
 function updateLabelsVisibility() {
   const zoom = map.getZoom();
   const inView = visibleMarkerCountInView();
-
   const show = (zoom >= 10) && (inView <= 160);
 
   for (const [k, isOn] of enabled.entries()) {
@@ -422,24 +470,15 @@ function updateLabelsVisibility() {
 
 map.on("zoomend moveend", updateLabelsVisibility);
 
-// --- blokada refresh gdy user w interakcji ---
-function isUserInteracting() {
-  // otwarty popup
-  if (document.querySelector(".leaflet-popup")) return true;
-
-  // inline notatka widoczna
+// refresh blokujemy tylko gdy user edytuje inline notatkę (żeby nie znikło pole)
+function isInlineNoteOpen() {
   const inline = document.querySelector(".popupInlineNote");
-  if (inline && getComputedStyle(inline).display !== "none") return true;
-
-  // panel notatek otwarty
-  if (notesBox && getComputedStyle(notesBox).display !== "none") return true;
-
-  return false;
+  return inline && getComputedStyle(inline).display !== "none";
 }
 
 async function refresh() {
   try {
-    if (isUserInteracting()) return;
+    if (isInlineNoteOpen()) return;
 
     const res = await fetch("/api/points?max=5000", { cache: "no-store" });
     const data = await res.json();
@@ -450,6 +489,8 @@ async function refresh() {
 
     renderFilters();
     updateLabelsVisibility();
+
+    // jeśli okno notatek otwarte — i tak sobie odświeża osobnym timerem
   } catch (e) {
     console.warn(e);
   }
