@@ -14,8 +14,8 @@ const DEFAULT_SUBS = {
   "Agencja celna / weterynarz": [],
 };
 
-const LS_SUBS = "roadmap_subcategories_v2";
-const LS_DRAFT = "roadmap_form_draft_v2";
+const LS_SUBS = "mapyourpoints_subs_v3";
+const LS_DRAFT = "mapyourpoints_form_draft_v3";
 
 function uniq(arr) {
   return Array.from(new Set((arr || []).map(s => String(s).trim()).filter(Boolean)));
@@ -31,7 +31,6 @@ function loadSubs() {
   for (const c of CATEGORIES) init[c] = [...(DEFAULT_SUBS[c] || [])];
   return init;
 }
-
 function saveSubs(store) {
   localStorage.setItem(LS_SUBS, JSON.stringify(store));
 }
@@ -45,9 +44,7 @@ function loadDraft() {
     return raw ? JSON.parse(raw) : null;
   } catch { return null; }
 }
-function clearDraft() {
-  localStorage.removeItem(LS_DRAFT);
-}
+function clearDraft() { localStorage.removeItem(LS_DRAFT); }
 
 // elements
 const f = document.getElementById("f");
@@ -56,13 +53,11 @@ const linkEl = document.getElementById("link");
 const noteEl = document.getElementById("note");
 const catEl = document.getElementById("category");
 const subEl = document.getElementById("subcategory");
-const datalistEl = document.getElementById("subListDatalist");
 const submitBtn = document.getElementById("submitBtn");
-
 const okEl = document.getElementById("ok");
 const errEl = document.getElementById("err");
 
-// manage UI
+// manage
 const manageBtn = document.getElementById("manageBtn");
 const manageBox = document.getElementById("manageBox");
 const newSub = document.getElementById("newSub");
@@ -96,14 +91,29 @@ function renderCategories() {
   }
 }
 
-function renderDatalist() {
+function renderSubSelect(keep = true) {
   const cat = catEl.value;
   const subs = uniq(store[cat] || []);
-  datalistEl.innerHTML = "";
+  const prev = keep ? subEl.value : "";
+
+  subEl.innerHTML = "";
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = "<brak>";
+  subEl.appendChild(none);
+
   for (const s of subs) {
     const opt = document.createElement("option");
     opt.value = s;
-    datalistEl.appendChild(opt);
+    opt.textContent = s;
+    subEl.appendChild(opt);
+  }
+
+  if (keep) {
+    subEl.value = prev;
+    if (subEl.value !== prev) subEl.value = "";
+  } else {
+    subEl.value = "";
   }
 }
 
@@ -112,7 +122,6 @@ function renderManageList() {
   const subs = uniq(store[cat] || []);
 
   subManage.innerHTML = "";
-
   if (!subs.length) {
     const empty = document.createElement("div");
     empty.className = "small muted";
@@ -142,7 +151,7 @@ function renderManageList() {
     del.onclick = () => {
       store[cat] = uniq((store[cat] || []).filter(x => x !== s));
       saveSubs(store);
-      renderDatalist();
+      renderSubSelect(true);
       renderManageList();
       saveDraft(getState);
     };
@@ -153,21 +162,13 @@ function renderManageList() {
   }
 }
 
-function showOk(msg) {
-  okEl.style.display = "block";
-  okEl.textContent = msg;
-  errEl.style.display = "none";
-}
-function showErr(msg) {
-  errEl.style.display = "block";
-  errEl.textContent = msg;
-  okEl.style.display = "none";
-}
+function showOk(msg) { okEl.style.display = "block"; okEl.textContent = msg; errEl.style.display = "none"; }
+function showErr(msg) { errEl.style.display = "block"; errEl.textContent = msg; okEl.style.display = "none"; }
 
 // init
 renderCategories();
 catEl.value = CATEGORIES[0];
-renderDatalist();
+renderSubSelect(false);
 
 const draft = loadDraft();
 if (draft) {
@@ -175,12 +176,13 @@ if (draft) {
   linkEl.value = draft.link || "";
   noteEl.value = draft.note || "";
   if (draft.category && CATEGORIES.includes(draft.category)) catEl.value = draft.category;
-  renderDatalist();
+  renderSubSelect(false);
   subEl.value = draft.subcategory || "";
+  if (subEl.value !== (draft.subcategory || "")) subEl.value = "";
 }
 
 catEl.onchange = () => {
-  renderDatalist();
+  renderSubSelect(false);
   renderManageList();
   saveDraft(getState);
 };
@@ -195,19 +197,19 @@ addSubBtn.onclick = () => {
   const cat = catEl.value;
   const val = String(newSub.value || "").trim();
   if (!val) return;
+
   store[cat] = uniq([...(store[cat] || []), val]);
   saveSubs(store);
 
   newSub.value = "";
-  renderDatalist();
+  renderSubSelect(true);
   renderManageList();
 
-  // mega ważne: ustawiamy w input
   subEl.value = val;
   saveDraft(getState);
 };
 
-// submit (AJAX) — nic nie znika przy błędzie
+// submit
 f.addEventListener("submit", async (e) => {
   e.preventDefault();
 
@@ -215,7 +217,7 @@ f.addEventListener("submit", async (e) => {
     name: String(nameEl.value || "").trim(),
     link: String(linkEl.value || "").trim(),
     category: String(catEl.value || "").trim(),
-    subcategory: String(subEl.value || "").trim(), // <- TERAZ ZAWSZE TEKST
+    subcategory: String(subEl.value || "").trim(),
     note: String(noteEl.value || "").trim(),
   };
 
@@ -228,7 +230,7 @@ f.addEventListener("submit", async (e) => {
   try {
     const res = await fetch("/api/submit", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json; charset=utf-8" },
       body: JSON.stringify(payload),
     });
     const data = await res.json();
@@ -238,10 +240,10 @@ f.addEventListener("submit", async (e) => {
       return;
     }
 
-    showOk("✅ Zapisane! Punkt pojawi się na mapie za chwilę.");
+    showOk("✅ Zapisane!");
     clearDraft();
 
-    // czyścimy tylko po sukcesie:
+    // czyść po sukcesie (u Ciebie to jest OK)
     nameEl.value = "";
     linkEl.value = "";
     noteEl.value = "";
