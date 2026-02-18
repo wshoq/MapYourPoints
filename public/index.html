@@ -1,51 +1,46 @@
 <!doctype html>
 <html>
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Road Map</title>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>MapYourPoints</title>
 
-  <link rel="stylesheet" href="/style.css" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <link rel="stylesheet" href="/style.css"/>
 </head>
 
 <body>
-  <button class="panelToggle" id="panelToggle" aria-label="Toggle panel">☰</button>
-
-  <aside class="panel" id="panel">
-    <div class="panelHeader">
-      <div>
-        <div class="panelTitle">Road Map</div>
-        <div class="muted" id="status">Loading…</div>
-      </div>
-      <button class="panelClose" id="panelClose" aria-label="Close">✕</button>
-    </div>
-
-    <div class="row muted" style="justify-content:space-between;">
-      <span>Auto-refresh: <span id="refresh">15</span>s</span>
-      <span id="count">—</span>
-    </div>
-
-    <div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap;">
-      <button class="btn" id="fitBtn">Fit</button>
-      <button class="btn" id="reloadBtn">Reload</button>
-      <a class="btn" href="/form">Dodaj punkt</a>
-    </div>
-
-    <div class="divider"></div>
-
-    <div class="muted" style="margin-bottom:6px;">Filtry</div>
-    <div id="filters" class="filters"></div>
-
-    <div class="divider"></div>
-
-    <div class="small muted">
-      Kliknij w punkt → masz przycisk <strong>Nawiguj</strong> (otwiera Google Maps i start nawigacji).
-    </div>
-  </aside>
-
   <div id="map"></div>
+
+  <div id="panel" class="panel isMin">
+    <div class="panelTop">
+      <button id="panelToggle" class="iconBtn" title="Rozwiń / Zwiń">☰</button>
+
+      <a class="btn" href="/form" id="addPointBtn">Dodaj punkt</a>
+      <button class="btn" id="myLocBtn">Moja lokalizacja</button>
+    </div>
+
+    <div class="panelBody">
+      <div id="filters"></div>
+
+      <div id="notesBox" class="notesBox" style="display:none;">
+        <div class="notesHeader">
+          <div id="notesTitle" class="notesTitle">Notatki</div>
+          <button id="notesClose" class="iconBtn" title="Zamknij">✕</button>
+        </div>
+
+        <textarea id="notesInput" class="notesInput" placeholder="Dodaj notatkę… (Enter = nowa linia, separator zrobi się sam)"></textarea>
+        <div class="row" style="gap:8px; margin-top:8px;">
+          <button id="notesAdd" class="btn">Dodaj notatkę</button>
+          <div id="notesStatus" class="small muted"></div>
+        </div>
+
+        <div id="notesList" class="notesList"></div>
+      </div>
+    </div>
+  </div>
 
   <script src="/map.js"></script>
 </body>
