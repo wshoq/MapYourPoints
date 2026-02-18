@@ -23,17 +23,14 @@ const FIELD_SUB = "Subcategory";
 const FIELD_NOTE = "Note";
 const FIELD_NOTES = "Notatki";
 
-const CATEGORIES = [
+// Default (opcjonalne) — żeby startowo coś było
+const DEFAULT_CATEGORIES = [
   "Stacja benzynowa",
   "Warsztat",
   "Parking",
   "Ważne Miejsce",
   "Agencja celna / weterynarz",
 ];
-
-function isValidCategory(cat) {
-  return CATEGORIES.includes(String(cat || "").trim());
-}
 
 // ---------------- URL helpers ----------------
 function looksLikeHttpUrl(u) {
@@ -44,7 +41,6 @@ function looksLikeHttpUrl(u) {
     return false;
   }
 }
-
 function resolveRelativeUrl(base, maybeRel) {
   try {
     return new URL(maybeRel, base).toString();
@@ -52,7 +48,6 @@ function resolveRelativeUrl(base, maybeRel) {
     return maybeRel;
   }
 }
-
 function extractLatLngFromUrl(url) {
   const s = String(url || "").trim();
   let m;
@@ -63,9 +58,6 @@ function extractLatLngFromUrl(url) {
   m = s.match(/[?&]q=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/);
   if (m) return { lat: Number(m[1]), lng: Number(m[2]) };
 
-  m = s.match(/\/maps\/search\/(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/);
-  if (m) return { lat: Number(m[1]), lng: Number(m[2]) };
-
   m = s.match(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/);
   if (m) return { lat: Number(m[1]), lng: Number(m[2]) };
 
@@ -74,7 +66,6 @@ function extractLatLngFromUrl(url) {
 
   return null;
 }
-
 function browserHeaders() {
   return {
     "User-Agent":
@@ -83,7 +74,6 @@ function browserHeaders() {
     "Accept-Language": "pl-PL,pl;q=0.9,en;q=0.8",
   };
 }
-
 function extractMapsUrlFromHtml(html, baseUrl) {
   const s = String(html || "");
 
@@ -110,7 +100,6 @@ function extractMapsUrlFromHtml(html, baseUrl) {
 
   return null;
 }
-
 async function resolveRedirectChain(startUrl, maxHops = 10) {
   let current = String(startUrl || "").trim();
   const visited = [];
@@ -135,7 +124,6 @@ async function resolveRedirectChain(startUrl, maxHops = 10) {
     if (ctype.includes("text/html")) {
       const html = await res.text();
       lastHtml = html;
-
       const fromHtml = extractMapsUrlFromHtml(html, current);
       if (fromHtml && fromHtml !== current) {
         current = fromHtml;
@@ -159,7 +147,6 @@ async function resolveRedirectChain(startUrl, maxHops = 10) {
 
   return { finalUrl: current, visited, lastHtml };
 }
-
 async function resolveToMapsUrl(inputUrl) {
   const inUrl = String(inputUrl || "").trim();
   const { finalUrl, visited, lastHtml } = await resolveRedirectChain(inUrl, 10);
@@ -171,7 +158,6 @@ async function resolveToMapsUrl(inputUrl) {
       return { mapsUrl: again.finalUrl || maybe, finalUrl: again.finalUrl || maybe, visited: [...visited, ...again.visited] };
     }
   }
-
   return { mapsUrl: finalUrl, finalUrl, visited };
 }
 
@@ -229,7 +215,6 @@ async function airtableRequest(method, pathPart, body) {
   }
   return json;
 }
-
 async function airtableUpdateRecord(recordId, fields) {
   return airtableRequest("PATCH", `${TABLE_ID}/${recordId}`, { fields });
 }
@@ -271,7 +256,7 @@ app.get("/api/points", async (req, res) => {
       })
       .filter((p) => p.name && Number.isFinite(p.lat) && Number.isFinite(p.lng) && p.category);
 
-    res.json({ ok: true, count: points.length, points, categories: CATEGORIES });
+    res.json({ ok: true, count: points.length, points });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e.message || e) });
   }
@@ -283,24 +268,27 @@ app.get("/api/meta", async (req, res) => {
     const maxRecords = Math.min(Number(req.query.max || 2000), 5000);
     const data = await airtableRequest("GET", `${TABLE_ID}?maxRecords=${encodeURIComponent(String(maxRecords))}`, null);
 
-    const map = {};
-    for (const c of CATEGORIES) map[c] = new Set();
+    const catSet = new Set(DEFAULT_CATEGORIES);
+    const subMap = new Map(); // cat -> Set(sub)
 
     for (const r of (data.records || [])) {
       const f = r.fields || {};
       const cat = String(f[FIELD_CAT] || "").trim();
       const sub = String(f[FIELD_SUB] || "").trim();
       if (!cat) continue;
-      if (!map[cat]) map[cat] = new Set();
-      if (sub) map[cat].add(sub);
+
+      catSet.add(cat);
+      if (!subMap.has(cat)) subMap.set(cat, new Set());
+      if (sub) subMap.get(cat).add(sub);
     }
 
-    const out = {};
-    for (const [k, set] of Object.entries(map)) {
-      out[k] = Array.from(set).sort((a, b) => a.localeCompare(b, "pl"));
+    const categories = Array.from(catSet).sort((a, b) => a.localeCompare(b, "pl"));
+    const subcategories = {};
+    for (const c of categories) {
+      subcategories[c] = Array.from(subMap.get(c) || []).sort((a, b) => a.localeCompare(b, "pl"));
     }
 
-    res.json({ ok: true, categories: CATEGORIES, subcategories: out });
+    res.json({ ok: true, categories, subcategories });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e.message || e) });
   }
@@ -315,7 +303,7 @@ async function handleSubmitCore(body) {
   const note = String(body.note || "").trim();
 
   if (!name) return { ok: false, status: 400, error: "Brak nazwy" };
-  if (!isValidCategory(category)) return { ok: false, status: 400, error: "Nieprawidłowa kategoria" };
+  if (!category) return { ok: false, status: 400, error: "Brak kategorii" };
   if (!linkOrAddr) return { ok: false, status: 400, error: "Brak linku lub adresu" };
 
   let coords = null;
@@ -368,7 +356,7 @@ app.get("/api/points/:id/notes", async (req, res) => {
     if (!id) return res.status(400).json({ ok: false, error: "Missing id" });
 
     const rec = await airtableRequest("GET", `${TABLE_ID}/${id}`, null);
-    const raw = String(rec?.fields?.[FIELD_NOTES] || "");
+    const raw = String(rec?.fields?.["Notatki"] || "");
     res.json({ ok: true, notes: splitNotes(raw) });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e.message || e) });
@@ -383,13 +371,12 @@ app.post("/api/points/:id/notes", async (req, res) => {
     if (!text) return res.status(400).json({ ok: false, error: "Pusta notatka" });
 
     const rec = await airtableRequest("GET", `${TABLE_ID}/${id}`, null);
-    const raw = String(rec?.fields?.[FIELD_NOTES] || "");
+    const raw = String(rec?.fields?.["Notatki"] || "");
     const list = splitNotes(raw);
 
-    // BEZ TIMESTAMPÓW
-    list.unshift(text);
-
+    list.unshift(text); // bez timestampu
     await airtableUpdateRecord(id, { [FIELD_NOTES]: joinNotes(list) });
+
     res.json({ ok: true, notes: list });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e.message || e) });
@@ -404,13 +391,14 @@ app.delete("/api/points/:id/notes/:idx", async (req, res) => {
     if (!Number.isInteger(idx) || idx < 0) return res.status(400).json({ ok: false, error: "Bad idx" });
 
     const rec = await airtableRequest("GET", `${TABLE_ID}/${id}`, null);
-    const raw = String(rec?.fields?.[FIELD_NOTES] || "");
+    const raw = String(rec?.fields?.["Notatki"] || "");
     const list = splitNotes(raw);
 
     if (idx >= list.length) return res.status(400).json({ ok: false, error: "Idx out of range" });
 
     list.splice(idx, 1);
     await airtableUpdateRecord(id, { [FIELD_NOTES]: joinNotes(list) });
+
     res.json({ ok: true, notes: list });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e.message || e) });
