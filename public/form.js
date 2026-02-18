@@ -14,8 +14,8 @@ const DEFAULT_SUBS = {
   "Agencja celna / weterynarz": [],
 };
 
-const LS_SUBS = "mapyourpoints_subs_v3";
-const LS_DRAFT = "mapyourpoints_form_draft_v3";
+const LS_SUBS = "mapyourpoints_subs_v4";
+const LS_DRAFT = "mapyourpoints_form_draft_v4";
 
 function uniq(arr) {
   return Array.from(new Set((arr || []).map(s => String(s).trim()).filter(Boolean)));
@@ -165,95 +165,114 @@ function renderManageList() {
 function showOk(msg) { okEl.style.display = "block"; okEl.textContent = msg; errEl.style.display = "none"; }
 function showErr(msg) { errEl.style.display = "block"; errEl.textContent = msg; okEl.style.display = "none"; }
 
-// init
-renderCategories();
-catEl.value = CATEGORIES[0];
-renderSubSelect(false);
+// --- wczytaj subkategorie z Airtable i zmerge’uj ---
+async function loadMetaAndMerge() {
+  try {
+    const res = await fetch("/api/meta?max=5000", { cache: "no-store" });
+    const data = await res.json();
+    if (!data?.ok) return;
 
-const draft = loadDraft();
-if (draft) {
-  nameEl.value = draft.name || "";
-  linkEl.value = draft.link || "";
-  noteEl.value = draft.note || "";
-  if (draft.category && CATEGORIES.includes(draft.category)) catEl.value = draft.category;
-  renderSubSelect(false);
-  subEl.value = draft.subcategory || "";
-  if (subEl.value !== (draft.subcategory || "")) subEl.value = "";
+    const fromDb = data.subcategories || {};
+    for (const cat of CATEGORIES) {
+      const a = store[cat] || [];
+      const b = fromDb[cat] || [];
+      store[cat] = uniq([...a, ...b]);
+    }
+    saveSubs(store);
+  } catch {}
 }
 
-catEl.onchange = () => {
+// init
+(async function init() {
+  renderCategories();
+  catEl.value = CATEGORIES[0];
+
+  await loadMetaAndMerge();
   renderSubSelect(false);
-  renderManageList();
-  saveDraft(getState);
-};
 
-manageBtn.onclick = () => {
-  const open = manageBox.style.display !== "none";
-  manageBox.style.display = open ? "none" : "block";
-  if (!open) renderManageList();
-};
+  const draft = loadDraft();
+  if (draft) {
+    nameEl.value = draft.name || "";
+    linkEl.value = draft.link || "";
+    noteEl.value = draft.note || "";
+    if (draft.category && CATEGORIES.includes(draft.category)) catEl.value = draft.category;
+    renderSubSelect(false);
+    subEl.value = draft.subcategory || "";
+    if (subEl.value !== (draft.subcategory || "")) subEl.value = "";
+  }
 
-addSubBtn.onclick = () => {
-  const cat = catEl.value;
-  const val = String(newSub.value || "").trim();
-  if (!val) return;
-
-  store[cat] = uniq([...(store[cat] || []), val]);
-  saveSubs(store);
-
-  newSub.value = "";
-  renderSubSelect(true);
-  renderManageList();
-
-  subEl.value = val;
-  saveDraft(getState);
-};
-
-// submit
-f.addEventListener("submit", async (e) => {
-  e.preventDefault();
-
-  const payload = {
-    name: String(nameEl.value || "").trim(),
-    link: String(linkEl.value || "").trim(),
-    category: String(catEl.value || "").trim(),
-    subcategory: String(subEl.value || "").trim(),
-    note: String(noteEl.value || "").trim(),
+  catEl.onchange = () => {
+    renderSubSelect(false);
+    renderManageList();
+    saveDraft(getState);
   };
 
-  saveDraft(getState);
+  manageBtn.onclick = () => {
+    const open = manageBox.style.display !== "none";
+    manageBox.style.display = open ? "none" : "block";
+    if (!open) renderManageList();
+  };
 
-  submitBtn.disabled = true;
-  const prev = submitBtn.textContent;
-  submitBtn.textContent = "Wysyłam…";
+  addSubBtn.onclick = () => {
+    const cat = catEl.value;
+    const val = String(newSub.value || "").trim();
+    if (!val) return;
 
-  try {
-    const res = await fetch("/api/submit", {
-      method: "POST",
-      headers: { "Content-Type": "application/json; charset=utf-8" },
-      body: JSON.stringify(payload),
-    });
-    const data = await res.json();
+    store[cat] = uniq([...(store[cat] || []), val]);
+    saveSubs(store);
 
-    if (!res.ok || !data?.ok) {
-      showErr(data?.error || "Błąd zapisu");
-      return;
-    }
+    newSub.value = "";
+    renderSubSelect(true);
+    renderManageList();
 
-    showOk("✅ Zapisane!");
-    clearDraft();
-
-    // czyść po sukcesie (u Ciebie to jest OK)
-    nameEl.value = "";
-    linkEl.value = "";
-    noteEl.value = "";
-    subEl.value = "";
-    manageBox.style.display = "none";
+    subEl.value = val;
     saveDraft(getState);
-  } catch (err) {
-    showErr(String(err?.message || err));
-  } finally {
-    submitBtn.disabled = false;
-    submitBtn.textContent = prev;
-  }
-});
+  };
+
+  f.addEventListener("submit", async (e) => {
+    e.preventDefault();
+
+    const payload = {
+      name: String(nameEl.value || "").trim(),
+      link: String(linkEl.value || "").trim(),
+      category: String(catEl.value || "").trim(),
+      subcategory: String(subEl.value || "").trim(),
+      note: String(noteEl.value || "").trim(),
+    };
+
+    saveDraft(getState);
+
+    submitBtn.disabled = true;
+    const prev = submitBtn.textContent;
+    submitBtn.textContent = "Wysyłam…";
+
+    try {
+      const res = await fetch("/api/submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+
+      if (!res.ok || !data?.ok) {
+        showErr(data?.error || "Błąd zapisu");
+        return;
+      }
+
+      showOk("✅ Zapisane!");
+      clearDraft();
+
+      nameEl.value = "";
+      linkEl.value = "";
+      noteEl.value = "";
+      subEl.value = "";
+      manageBox.style.display = "none";
+      saveDraft(getState);
+    } catch (err) {
+      showErr(String(err?.message || err));
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = prev;
+    }
+  });
+})();
