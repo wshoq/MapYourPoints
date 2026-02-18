@@ -17,17 +17,19 @@ html, body { height:100%; margin:0; font-family: system-ui, -apple-system, Segoe
 .small{ font-size:12px; }
 .muted{ color: rgba(0,0,0,0.55); }
 
-/* PANEL */
+/* PANEL (zwężony) */
 .panel{
   position:absolute;
   top:12px; left:12px;
-  width:25vw; min-width:280px; max-width:380px;
+  width:18vw;               /* było ~25vw */
+  min-width:220px;          /* było 280 */
+  max-width:300px;          /* było 380 */
   background: rgba(255,255,255,0.96);
   border: 1px solid rgba(0,0,0,0.12);
   border-radius: 14px;
   box-shadow: 0 12px 30px rgba(0,0,0,0.14);
   overflow:hidden;
-  z-index: 1000; /* <<< TO BYŁ PROBLEM */
+  z-index: 1000;
 }
 .panelTop{ display:flex; gap:8px; padding:10px; align-items:center; }
 .panelBody{
@@ -54,25 +56,37 @@ html, body { height:100%; margin:0; font-family: system-ui, -apple-system, Segoe
   border:1px solid rgba(0,0,0,0.14);
 }
 
-/* MARKER LABELS: większe + wcześniej */
+/* MARKER LABELS */
 .markerLabel{
   background: rgba(255,255,255,0.92);
   border: 1px solid rgba(0,0,0,0.12);
   border-radius: 10px;
   padding: 3px 7px;
   box-shadow: 0 6px 18px rgba(0,0,0,0.12);
-  font-size: 14px; /* większe */
+  font-size: 14px;
   line-height: 1.2;
   white-space: nowrap;
 }
 .leaflet-tooltip.markerLabel:before{ border-top-color: rgba(255,255,255,0.92); }
 
-/* NOTES */
-.notesBox{ margin-top:12px; border-top:1px solid rgba(0,0,0,0.12); padding-top:12px; }
-.notesHeader{ display:flex; align-items:center; justify-content:space-between; gap:10px; }
+/* NOTES WINDOW (osobne okno) */
+.notesWin{
+  position:absolute;
+  left:12px;
+  bottom:12px;
+  width:360px;
+  max-width: calc(100vw - 24px);
+  background: rgba(255,255,255,0.97);
+  border: 1px solid rgba(0,0,0,0.12);
+  border-radius: 14px;
+  box-shadow: 0 12px 30px rgba(0,0,0,0.18);
+  z-index: 1200;
+  overflow:hidden;
+}
+.notesHeader{ display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px; }
 .notesTitle{ font-weight:700; }
-.notesInput{ margin-top:8px; min-height:110px; resize: both; width:100%; box-sizing:border-box; }
-.notesList{ margin-top:10px; display:flex; flex-direction:column; gap:10px; }
+.notesBody{ padding:10px; border-top:1px solid rgba(0,0,0,0.08); max-height: 35vh; overflow:auto; }
+.notesList{ display:flex; flex-direction:column; gap:10px; margin-top:8px; }
 .noteRow{
   display:flex; gap:10px; align-items:flex-start;
   padding:10px; border:1px solid rgba(0,0,0,0.12);
