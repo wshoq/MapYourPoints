@@ -18,7 +18,6 @@ function setPanel(open) {
 toggleBtn.onclick = () => setPanel(!panel.classList.contains("isOpen"));
 closeBtn.onclick = () => setPanel(false);
 
-// close on map click (mobile convenience)
 map.on("click", () => {
   if (window.innerWidth <= 900) setPanel(false);
 });
@@ -43,14 +42,12 @@ function esc(s) {
 }
 
 function hashTo01(str) {
-  // deterministic 0..1
   const s = String(str || "");
   let h = 2166136261;
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i);
     h = Math.imul(h, 16777619);
   }
-  // 0..1
   return ((h >>> 0) % 1000) / 999;
 }
 
@@ -80,17 +77,15 @@ function colorFor(category, subcategory) {
   const sub = String(subcategory || "").trim();
   if (!sub) return base;
 
-  // “odcień” w obrębie kategorii
   const t = hashTo01(`${category}::${sub}`);
-  // mieszamy z bielą i czernią w zależności od t (żeby były różne odcienie)
-  if (t < 0.5) return mix(base, "#ffffff", 0.18 + t * 0.22); // jaśniej
-  return mix(base, "#000000", 0.12 + (t - 0.5) * 0.22); // ciemniej
+  if (t < 0.5) return mix(base, "#ffffff", 0.18 + t * 0.22);
+  return mix(base, "#000000", 0.12 + (t - 0.5) * 0.22);
 }
 
 // ===== Data structures =====
-const layers = new Map(); // key = "Category||Subcategory" -> layerGroup
-const enabled = new Map(); // key -> bool
-const markers = new Map(); // key -> [marker]
+const layers = new Map();   // key = "Category||Subcategory" -> layerGroup
+const enabled = new Map();  // key -> bool
+const markers = new Map();  // key -> [marker]
 let didInitialFit = false;
 let userInteracted = false;
 
@@ -138,17 +133,18 @@ function addPoint(p) {
 
   const dest = encodeURIComponent(`${p.lat},${p.lng}`);
   const gmapsNav = `https://www.google.com/maps/dir/?api=1&destination=${dest}`;
+  const gmapsPin = `https://www.google.com/maps/search/?api=1&query=${dest}`;
 
   const popup = `
     <div class="popupTitle">${esc(p.name)}</div>
     <div class="popupMeta">
       <div><strong>${esc(cat)}</strong>${sub ? ` · <span>${esc(sub)}</span>` : ""}</div>
       ${note ? `<div class="popupNote">${esc(note)}</div>` : ""}
-      ${p.createdTime ? `<div class="popupTime muted">${esc(p.createdTime)}</div>` : ""}
     </div>
     <div class="popupActions">
       <a class="btn" href="${gmapsNav}" target="_blank" rel="noopener">Nawiguj</a>
-      <button class="btn" data-copy="${esc(gmapsNav)}">Kopiuj link</button>
+      <a class="btn" href="${gmapsPin}" target="_blank" rel="noopener">Otwórz w Maps</a>
+      <button class="btn" data-copy="${esc(gmapsNav)}">Kopiuj nawigację</button>
     </div>
   `;
 
@@ -163,9 +159,8 @@ function addPoint(p) {
       try {
         await navigator.clipboard.writeText(url);
         btn.textContent = "Skopiowano ✓";
-        setTimeout(() => (btn.textContent = "Kopiuj link"), 1200);
+        setTimeout(() => (btn.textContent = "Kopiuj nawigację"), 1200);
       } catch {
-        // fallback
         prompt("Skopiuj:", url);
       }
     };
@@ -190,6 +185,12 @@ function fitToVisible() {
     }
   }
 
+  // jeśli mamy geolokację – też ją uwzględnij
+  if (myLocationMarker) {
+    bounds.extend(myLocationMarker.getLatLng());
+    any = true;
+  }
+
   if (any) map.fitBounds(bounds.pad(0.18));
 }
 
@@ -197,7 +198,6 @@ function renderFilters() {
   const el = document.getElementById("filters");
   el.innerHTML = "";
 
-  // build: category -> subcategory[] (including empty "")
   const byCat = new Map();
   for (const k of layers.keys()) {
     const [cat, sub] = k.split("||");
@@ -303,5 +303,96 @@ async function refresh() {
 document.getElementById("fitBtn").onclick = () => fitToVisible();
 document.getElementById("reloadBtn").onclick = () => refresh();
 
+// ======== GEOLOCATION “bajer” ========
+let myLocationMarker = null;
+let myAccuracyCircle = null;
+let lastGeo = null;
+
+function addMyLocationButton() {
+  const panelHeaderRow = document.querySelector(".panel .row");
+  // wstawiamy przycisk obok Fit/Reload/Add (najprościej: pod Fit/Reload jest już row)
+  const actionRow = document.querySelectorAll(".panel .row")[1];
+  if (!actionRow) return;
+
+  const btn = document.createElement("button");
+  btn.className = "btn";
+  btn.id = "myLocBtn";
+  btn.textContent = "Moja lokalizacja";
+  btn.onclick = () => {
+    if (lastGeo) {
+      const { lat, lng } = lastGeo;
+      map.setView([lat, lng], Math.max(map.getZoom(), 14));
+      if (myLocationMarker) myLocationMarker.openPopup();
+      return;
+    }
+    requestMyLocationOnce(true);
+  };
+
+  actionRow.appendChild(btn);
+}
+
+function setMyLocation(lat, lng, accuracy) {
+  lastGeo = { lat, lng, accuracy };
+
+  if (!myLocationMarker) {
+    myLocationMarker = L.circleMarker([lat, lng], {
+      radius: 8,
+      weight: 2,
+      color: "rgba(0,0,0,0.4)",
+      fillColor: "#000000",
+      fillOpacity: 0.9,
+    }).addTo(map);
+
+    myLocationMarker.bindPopup(`<div class="popupTitle">Ty</div><div class="popupMeta muted">Dokładność ~${Math.round(accuracy)}m</div>`);
+  } else {
+    myLocationMarker.setLatLng([lat, lng]);
+    myLocationMarker.setPopupContent(`<div class="popupTitle">Ty</div><div class="popupMeta muted">Dokładność ~${Math.round(accuracy)}m</div>`);
+  }
+
+  if (Number.isFinite(accuracy)) {
+    if (!myAccuracyCircle) {
+      myAccuracyCircle = L.circle([lat, lng], {
+        radius: Math.max(accuracy, 10),
+        weight: 1,
+        color: "rgba(0,0,0,0.2)",
+        fillColor: "rgba(0,0,0,0.08)",
+        fillOpacity: 1,
+      }).addTo(map);
+    } else {
+      myAccuracyCircle.setLatLng([lat, lng]);
+      myAccuracyCircle.setRadius(Math.max(accuracy, 10));
+    }
+  }
+}
+
+function requestMyLocationOnce(centerAfter) {
+  if (!navigator.geolocation) return;
+
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      const { latitude, longitude, accuracy } = pos.coords;
+      setMyLocation(latitude, longitude, accuracy);
+      if (centerAfter) map.setView([latitude, longitude], Math.max(map.getZoom(), 14));
+    },
+    () => {
+      // ignore (user denied)
+    },
+    { enableHighAccuracy: true, timeout: 8000, maximumAge: 10000 }
+  );
+}
+
+// auto-request on mobile-ish devices (but only once)
+function maybeAutoGeo() {
+  const isMobile = window.matchMedia("(max-width: 900px)").matches;
+  if (!isMobile) return;
+
+  // nie spamujemy promptem — prosimy raz po załadowaniu
+  requestMyLocationOnce(false);
+}
+
+addMyLocationButton();
+maybeAutoGeo();
+
+// ===== init =====
 refresh();
 setInterval(refresh, REFRESH_MS);
