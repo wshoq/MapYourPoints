@@ -36,7 +36,24 @@ function isValidCategory(cat) {
   return CATEGORIES.includes(c);
 }
 
-// --- helpers ---
+// ----------------- URL helpers -----------------
+function looksLikeHttpUrl(u) {
+  try {
+    const x = new URL(String(u));
+    return x.protocol === "http:" || x.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function resolveRelativeUrl(base, maybeRel) {
+  try {
+    return new URL(maybeRel, base).toString();
+  } catch {
+    return maybeRel;
+  }
+}
+
 function extractLatLngFromUrl(url) {
   try {
     const s = String(url || "").trim();
@@ -62,8 +79,12 @@ function extractLatLngFromUrl(url) {
     m = s.match(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/);
     if (m) return { lat: Number(m[1]), lng: Number(m[2]) };
 
-    // ?ll=lat,lng (czasem bywa %2C)
+    // ?ll=lat,lng
     m = s.match(/[?&]ll=(-?\d+(?:\.\d+)?)(?:%2C|,)(-?\d+(?:\.\d+)?)/);
+    if (m) return { lat: Number(m[1]), lng: Number(m[2]) };
+
+    // query=lat,lng
+    m = s.match(/[?&](?:query|destination)=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/);
     if (m) return { lat: Number(m[1]), lng: Number(m[2]) };
 
     return null;
@@ -72,99 +93,148 @@ function extractLatLngFromUrl(url) {
   }
 }
 
-function looksLikeHttpUrl(u) {
-  try {
-    const x = new URL(String(u));
-    return x.protocol === "http:" || x.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
-// wyciąga z HTML potencjalny „prawdziwy” link do maps
-function extractMapsUrlFromHtml(html) {
+function extractMapsUrlFromHtml(html, baseUrl) {
   const s = String(html || "");
 
   // canonical
   let m = s.match(/<link[^>]+rel=["']canonical["'][^>]+href=["']([^"']+)["']/i);
-  if (m && looksLikeHttpUrl(m[1])) return m[1];
+  if (m && m[1]) return resolveRelativeUrl(baseUrl, m[1].replace(/&amp;/g, "&"));
 
-  // meta refresh
+  // meta refresh url=
   m = s.match(/http-equiv=["']refresh["'][^>]+content=["'][^"']*url=([^"']+)["']/i);
-  if (m) {
-    const u = m[1].trim().replace(/&amp;/g, "&");
-    if (looksLikeHttpUrl(u)) return u;
-  }
+  if (m && m[1]) return resolveRelativeUrl(baseUrl, m[1].trim().replace(/&amp;/g, "&"));
 
-  // szukaj pierwszego sensownego URL do google maps
+  // JS redirect: window.location / location.href / location.replace
+  m = s.match(/(?:window\.)?location(?:\.href)?\s*=\s*["']([^"']+)["']/i);
+  if (m && m[1]) return resolveRelativeUrl(baseUrl, m[1].replace(/&amp;/g, "&"));
+
+  m = s.match(/location\.replace\(\s*["']([^"']+)["']\s*\)/i);
+  if (m && m[1]) return resolveRelativeUrl(baseUrl, m[1].replace(/&amp;/g, "&"));
+
+  // direct google maps URL in HTML
   m = s.match(/https:\/\/www\.google\.com\/maps[^"'\s<]+/i);
   if (m) return m[0].replace(/&amp;/g, "&");
 
   m = s.match(/https:\/\/maps\.app\.goo\.gl\/[^"'\s<]+/i);
   if (m) return m[0].replace(/&amp;/g, "&");
 
-  // czasem jest encoded url=...
-  m = s.match(/url=([^&"'<> ]+)/i);
-  if (m) {
-    const decoded = decodeURIComponent(m[1]).replace(/&amp;/g, "&");
-    if (looksLikeHttpUrl(decoded)) return decoded;
-  }
+  // google redirect wrappers: https://www.google.com/url?q=...
+  m = s.match(/https:\/\/www\.google\.com\/url\?[^"'\s<]+/i);
+  if (m) return m[0].replace(/&amp;/g, "&");
 
   return null;
 }
 
-// fetch, ale tak żeby shortlinki zadziałały „jak w przeglądarce”
-async function fetchWithBrowserHeaders(url) {
-  const res = await fetch(url, {
-    redirect: "follow",
-    headers: {
-      // share.google lubi wyglądać jak browser
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
-      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    },
-  });
-  return res;
+function browserHeaders() {
+  return {
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+    "Accept":
+      "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "pl-PL,pl;q=0.9,en;q=0.8",
+  };
 }
 
-// rozwiązuje shortlink -> final URL (a jeśli final to HTML, wyciąga z niego link do maps)
+// Manual redirect resolver (czyta Location nawet jeśli fetch nie chce follow)
+async function resolveRedirectChain(startUrl, maxHops = 8) {
+  let current = String(startUrl || "").trim();
+  const visited = [];
+  let lastHtml = null;
+
+  for (let i = 0; i < maxHops; i++) {
+    if (!current || !looksLikeHttpUrl(current)) break;
+    if (visited.includes(current)) break;
+    visited.push(current);
+
+    // Szybki sukces: coords już są
+    if (extractLatLngFromUrl(current)) {
+      return { finalUrl: current, visited, lastHtml };
+    }
+
+    // HEAD bywa blokowany, więc od razu GET, ale redirect manual
+    const res = await fetch(current, {
+      method: "GET",
+      redirect: "manual",
+      headers: browserHeaders(),
+    });
+
+    const status = res.status;
+    const loc = res.headers.get("location");
+
+    // 3xx -> idziemy dalej po Location
+    if (status >= 300 && status < 400 && loc) {
+      current = resolveRelativeUrl(current, loc);
+      continue;
+    }
+
+    // 200/4xx/5xx -> spróbujmy HTML parser
+    const ctype = (res.headers.get("content-type") || "").toLowerCase();
+    if (ctype.includes("text/html")) {
+      const html = await res.text();
+      lastHtml = html;
+
+      const fromHtml = extractMapsUrlFromHtml(html, current);
+      if (fromHtml && fromHtml !== current) {
+        current = fromHtml;
+        continue;
+      }
+    }
+
+    // jeśli google url wrapper (/url?q=...) to spróbuj wyciągnąć q=
+    try {
+      const u = new URL(current);
+      if (u.hostname === "www.google.com" && u.pathname === "/url") {
+        const q = u.searchParams.get("q");
+        if (q && looksLikeHttpUrl(q)) {
+          current = q;
+          continue;
+        }
+      }
+    } catch {}
+
+    // w tym punkcie nie ma gdzie iść dalej
+    return { finalUrl: current, visited, lastHtml };
+  }
+
+  return { finalUrl: current, visited, lastHtml };
+}
+
 async function resolveToMapsUrl(inputUrl) {
-  const u = String(inputUrl || "").trim();
-  if (!u) return { finalUrl: u, mapsUrl: null };
+  const inUrl = String(inputUrl || "").trim();
+  const { finalUrl, visited, lastHtml } = await resolveRedirectChain(inUrl, 10);
 
-  // 1) spróbuj klasycznie: fetch i redirect follow
-  let res = await fetchWithBrowserHeaders(u);
-  let finalUrl = res.url || u;
+  // 1) spróbuj coords z final
+  let coords = extractLatLngFromUrl(finalUrl);
 
-  // 2) jeśli finalUrl już ma coords -> super
-  if (extractLatLngFromUrl(finalUrl)) return { finalUrl, mapsUrl: finalUrl };
+  // 2) jeżeli final to google url wrapper, wyciągnij q= i spróbuj
+  if (!coords) {
+    try {
+      const u = new URL(finalUrl);
+      if (u.hostname === "www.google.com" && u.pathname === "/url") {
+        const q = u.searchParams.get("q");
+        if (q) coords = extractLatLngFromUrl(q);
+        if (coords) return { mapsUrl: q, finalUrl, visited };
+      }
+    } catch {}
+  }
 
-  // 3) jeśli odpowiedź jest HTML -> spróbuj wyciągnąć mapsUrl z treści
-  const ctype = (res.headers.get("content-type") || "").toLowerCase();
-  if (ctype.includes("text/html")) {
-    const html = await res.text();
-    const fromHtml = extractMapsUrlFromHtml(html);
-    if (fromHtml) {
-      // spróbuj jeszcze raz rozwinąć (bo to może być maps.app.goo.gl)
-      if (extractLatLngFromUrl(fromHtml)) return { finalUrl, mapsUrl: fromHtml };
-
-      // follow redirects on extracted
-      const res2 = await fetchWithBrowserHeaders(fromHtml);
-      const final2 = res2.url || fromHtml;
-
-      if (extractLatLngFromUrl(final2)) return { finalUrl: final2, mapsUrl: final2 };
-
-      // czasem coords siedzą w tym fromHtml mimo że res2.url nie ma
-      if (extractLatLngFromUrl(fromHtml)) return { finalUrl: fromHtml, mapsUrl: fromHtml };
-
-      return { finalUrl: final2, mapsUrl: final2 };
+  // 3) spróbuj ostatni HTML (czasem coords siedzą w treści)
+  if (!coords && lastHtml) {
+    const maybe = extractMapsUrlFromHtml(lastHtml, finalUrl);
+    if (maybe) {
+      coords = extractLatLngFromUrl(maybe);
+      if (coords) return { mapsUrl: maybe, finalUrl: maybe, visited };
+      // jeśli to maps.app.goo.gl – rozwiń jeszcze raz
+      const again = await resolveRedirectChain(maybe, 6);
+      const coords2 = extractLatLngFromUrl(again.finalUrl);
+      if (coords2) return { mapsUrl: again.finalUrl, finalUrl: again.finalUrl, visited: [...visited, ...again.visited] };
     }
   }
 
-  // 4) fallback
-  return { finalUrl, mapsUrl: finalUrl };
+  return { mapsUrl: finalUrl, finalUrl, visited };
 }
 
+// ----------------- Airtable -----------------
 async function airtableRequest(method, pathPart, body) {
   if (!AIRTABLE_TOKEN) throw new Error("Missing AIRTABLE_TOKEN (env)");
   if (!BASE_ID) throw new Error("Missing AIRTABLE_BASE_ID (env)");
@@ -192,13 +262,7 @@ async function airtableRequest(method, pathPart, body) {
 }
 
 // --- static ---
-app.use(
-  express.static(path.join(__dirname, "public"), {
-    etag: false,
-    maxAge: "0",
-  })
-);
-
+app.use(express.static(path.join(__dirname, "public"), { etag: false, maxAge: "0" }));
 app.get("/", (req, res) => res.sendFile(path.join(__dirname, "public/index.html")));
 app.get("/form", (req, res) => res.sendFile(path.join(__dirname, "public/form.html")));
 
@@ -241,32 +305,27 @@ async function handleSubmitCore(body) {
   if (!name) return { ok: false, status: 400, error: "Missing name" };
   if (!isValidCategory(category)) return { ok: false, status: 400, error: "Invalid category" };
 
-  // coords: allow manual later, but prefer link
-  let lat = Number(body.lat);
-  let lng = Number(body.lng);
-
   let coords = null;
   let debug = {};
 
-  if (Number.isFinite(lat) && Number.isFinite(lng)) {
-    coords = { lat, lng };
-  } else {
-    if (!link) return { ok: false, status: 400, error: "Missing google maps link" };
+  if (!link) return { ok: false, status: 400, error: "Missing google maps link" };
 
-    const { finalUrl, mapsUrl } = await resolveToMapsUrl(link);
-    debug = { finalUrl, mapsUrl };
+  const { mapsUrl, finalUrl, visited } = await resolveToMapsUrl(link);
+  debug = { mapsUrl, finalUrl, visited };
 
-    coords = extractLatLngFromUrl(mapsUrl) || extractLatLngFromUrl(finalUrl) || extractLatLngFromUrl(link);
+  coords =
+    extractLatLngFromUrl(mapsUrl) ||
+    extractLatLngFromUrl(finalUrl) ||
+    extractLatLngFromUrl(link);
 
-    if (!coords || !Number.isFinite(coords.lat) || !Number.isFinite(coords.lng)) {
-      return {
-        ok: false,
-        status: 400,
-        error:
-          "Nie udało się wyciągnąć współrzędnych z linku. Spróbuj: Google Maps → Udostępnij → Skopiuj link (albo udostępnij pinezkę, nie samą stronę).",
-        debug,
-      };
-    }
+  if (!coords || !Number.isFinite(coords.lat) || !Number.isFinite(coords.lng)) {
+    return {
+      ok: false,
+      status: 400,
+      error:
+        "Nie udało się wyciągnąć współrzędnych z linku. Jeśli to możliwe: w Google Maps dotknij pinezki miejsca → Udostępnij → skopiuj link (często maps.app.goo.gl działa najlepiej).",
+      debug,
+    };
   }
 
   const payload = {
@@ -275,8 +334,8 @@ async function handleSubmitCore(body) {
         fields: {
           [FIELD_NAME]: name,
           [FIELD_CAT]: category,
-          [FIELD_SUB]: subcategory || "",
-          [FIELD_NOTE]: note || "",
+          [FIELD_SUB]: subcategory, // <- nie zerujemy, zapisujemy nawet jak pusty string
+          [FIELD_NOTE]: note,
           [FIELD_LAT]: String(coords.lat),
           [FIELD_LNG]: String(coords.lng),
         },
@@ -299,18 +358,14 @@ app.post("/api/submit", async (req, res) => {
   }
 });
 
-// Form fallback
+// Fallback submit (gdyby JS był off)
 app.post("/submit", async (req, res) => {
   try {
     const out = await handleSubmitCore(req.body);
-    if (!out.ok) {
-      const msg = encodeURIComponent(out.error || "Submit failed");
-      return res.redirect(`/form?err=${msg}`);
-    }
+    if (!out.ok) return res.redirect(`/form?err=${encodeURIComponent(out.error || "Submit failed")}`);
     return res.redirect("/form?ok=1");
   } catch (e) {
-    const msg = encodeURIComponent(String(e.message || e));
-    return res.redirect(`/form?err=${msg}`);
+    return res.redirect(`/form?err=${encodeURIComponent(String(e.message || e))}`);
   }
 });
 
