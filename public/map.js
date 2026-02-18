@@ -7,22 +7,16 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
   attribution: "© OpenStreetMap",
 }).addTo(map);
 
-// ===== UI panel toggle (mobile-friendly) =====
+// ===== UI panel toggle =====
 const panel = document.getElementById("panel");
 const toggleBtn = document.getElementById("panelToggle");
 const closeBtn = document.getElementById("panelClose");
-
-function setPanel(open) {
-  panel.classList.toggle("isOpen", !!open);
-}
+function setPanel(open) { panel.classList.toggle("isOpen", !!open); }
 toggleBtn.onclick = () => setPanel(!panel.classList.contains("isOpen"));
 closeBtn.onclick = () => setPanel(false);
+map.on("click", () => { if (window.innerWidth <= 900) setPanel(false); });
 
-map.on("click", () => {
-  if (window.innerWidth <= 900) setPanel(false);
-});
-
-// ===== Categories -> base colors =====
+// ===== Colors =====
 const BASE_COLORS = {
   "Stacja benzynowa": "#2e7d32",
   "Warsztat": "#ef6c00",
@@ -33,59 +27,41 @@ const BASE_COLORS = {
 
 function esc(s) {
   return String(s || "").replace(/[&<>"']/g, (c) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;",
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[c]));
 }
 
 function hashTo01(str) {
   const s = String(str || "");
   let h = 2166136261;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
   return ((h >>> 0) % 1000) / 999;
 }
-
 function hexToRgb(hex) {
   const m = String(hex).replace("#", "");
   const n = parseInt(m.length === 3 ? m.split("").map(x => x + x).join("") : m, 16);
   return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
 }
-
 function rgbToHex({ r, g, b }) {
   const to = (x) => x.toString(16).padStart(2, "0");
   return `#${to(Math.max(0, Math.min(255, r)))}${to(Math.max(0, Math.min(255, g)))}${to(Math.max(0, Math.min(255, b)))}`;
 }
-
 function mix(c1, c2, t) {
-  const a = hexToRgb(c1);
-  const b = hexToRgb(c2);
-  return rgbToHex({
-    r: Math.round(a.r + (b.r - a.r) * t),
-    g: Math.round(a.g + (b.g - a.g) * t),
-    b: Math.round(a.b + (b.b - a.b) * t),
-  });
+  const a = hexToRgb(c1), b = hexToRgb(c2);
+  return rgbToHex({ r: Math.round(a.r + (b.r - a.r) * t), g: Math.round(a.g + (b.g - a.g) * t), b: Math.round(a.b + (b.b - a.b) * t) });
 }
-
 function colorFor(category, subcategory) {
   const base = BASE_COLORS[category] || "#333333";
   const sub = String(subcategory || "").trim();
   if (!sub) return base;
-
   const t = hashTo01(`${category}::${sub}`);
-  if (t < 0.5) return mix(base, "#ffffff", 0.18 + t * 0.22);
-  return mix(base, "#000000", 0.12 + (t - 0.5) * 0.22);
+  return t < 0.5 ? mix(base, "#ffffff", 0.18 + t * 0.22) : mix(base, "#000000", 0.12 + (t - 0.5) * 0.22);
 }
 
-// ===== Data structures =====
-const layers = new Map();   // key = "Category||Subcategory" -> layerGroup
-const enabled = new Map();  // key -> bool
-const markers = new Map();  // key -> [marker]
+// ===== Structures =====
+const layers = new Map();  // key -> group
+const enabled = new Map(); // key -> bool
+const markers = new Map(); // key -> markers
 let didInitialFit = false;
 let userInteracted = false;
 
@@ -96,7 +72,6 @@ function keyOf(p) {
   const sub = String(p.subcategory || "").trim();
   return `${cat}||${sub}`;
 }
-
 function ensureLayer(key) {
   if (!layers.has(key)) {
     const g = L.layerGroup().addTo(map);
@@ -105,12 +80,8 @@ function ensureLayer(key) {
     markers.set(key, []);
   }
 }
-
 function clearAll() {
-  for (const [k, g] of layers.entries()) {
-    g.clearLayers();
-    markers.set(k, []);
-  }
+  for (const [k, g] of layers.entries()) { g.clearLayers(); markers.set(k, []); }
 }
 
 function addPoint(p) {
@@ -118,17 +89,24 @@ function addPoint(p) {
   const sub = String(p.subcategory || "").trim();
   const note = String(p.note || "").trim();
   const key = keyOf(p);
-
   ensureLayer(key);
 
   const col = colorFor(cat, sub);
-
   const m = L.circleMarker([p.lat, p.lng], {
     radius: 7,
     weight: 2,
     color: "rgba(0,0,0,0.35)",
     fillColor: col,
     fillOpacity: 0.92,
+  });
+
+  // tooltip (name above marker)
+  m.bindTooltip(esc(p.name), {
+    permanent: true,
+    direction: "top",
+    offset: [0, -8],
+    opacity: 0.95,
+    className: "markerLabel",
   });
 
   const dest = encodeURIComponent(`${p.lat},${p.lng}`);
@@ -151,8 +129,7 @@ function addPoint(p) {
   m.bindPopup(popup);
   m.on("popupopen", (e) => {
     const root = e.popup.getElement();
-    if (!root) return;
-    const btn = root.querySelector("button[data-copy]");
+    const btn = root?.querySelector("button[data-copy]");
     if (!btn) return;
     btn.onclick = async () => {
       const url = btn.getAttribute("data-copy") || "";
@@ -175,23 +152,21 @@ function addPoint(p) {
 function fitToVisible() {
   const bounds = L.latLngBounds([]);
   let any = false;
-
   for (const [k, isOn] of enabled.entries()) {
     if (!isOn) continue;
-    const arr = markers.get(k) || [];
-    for (const m of arr) {
-      bounds.extend(m.getLatLng());
-      any = true;
-    }
+    for (const m of (markers.get(k) || [])) { bounds.extend(m.getLatLng()); any = true; }
   }
-
-  // jeśli mamy geolokację – też ją uwzględnij
-  if (myLocationMarker) {
-    bounds.extend(myLocationMarker.getLatLng());
-    any = true;
-  }
-
   if (any) map.fitBounds(bounds.pad(0.18));
+}
+
+function countForCategory(cat) {
+  let n = 0;
+  for (const k of layers.keys()) {
+    const [c] = k.split("||");
+    if (c !== cat) continue;
+    n += (markers.get(k) || []).length;
+  }
+  return n;
 }
 
 function renderFilters() {
@@ -204,12 +179,10 @@ function renderFilters() {
     if (!byCat.has(cat)) byCat.set(cat, new Set());
     byCat.get(cat).add(sub || "");
   }
-
   const cats = Array.from(byCat.keys()).sort((a, b) => a.localeCompare(b, "pl"));
 
   for (const cat of cats) {
     const subs = Array.from(byCat.get(cat)).sort((a, b) => a.localeCompare(b, "pl"));
-
     const details = document.createElement("details");
     details.open = true;
 
@@ -239,6 +212,7 @@ function renderFilters() {
         const g = layers.get(k);
         if (cb.checked) g.addTo(map);
         else map.removeLayer(g);
+        updateLabelsVisibility();
       };
 
       const sw = document.createElement("span");
@@ -264,37 +238,57 @@ function renderFilters() {
   }
 }
 
-function countForCategory(cat) {
+// ===== Labels visibility (zoom + density) =====
+function visibleMarkerCountInView() {
+  const b = map.getBounds();
   let n = 0;
-  for (const k of layers.keys()) {
-    const [c] = k.split("||");
-    if (c !== cat) continue;
-    n += (markers.get(k) || []).length;
+  for (const [k, isOn] of enabled.entries()) {
+    if (!isOn) continue;
+    for (const m of (markers.get(k) || [])) {
+      if (b.contains(m.getLatLng())) n++;
+    }
   }
   return n;
 }
 
+function updateLabelsVisibility() {
+  const zoom = map.getZoom();
+  const inView = visibleMarkerCountInView();
+  const show = (zoom >= 12) && (inView <= 80);
+
+  for (const [k, isOn] of enabled.entries()) {
+    const arr = markers.get(k) || [];
+    for (const m of arr) {
+      // tooltip jest permanent, więc tylko toggle opacity/display via class
+      const tt = m.getTooltip();
+      if (!tt) continue;
+      const el = tt.getElement?.();
+      if (!el) continue;
+      el.style.display = (show && isOn) ? "block" : "none";
+    }
+  }
+}
+
+map.on("zoomend moveend", () => updateLabelsVisibility());
+
 async function refresh() {
   const status = document.getElementById("status");
   const countEl = document.getElementById("count");
-
   try {
     const res = await fetch("/api/points?max=5000", { cache: "no-store" });
     const data = await res.json();
-    if (!data || !data.ok) throw new Error(data?.error || "Bad response");
+    if (!data?.ok) throw new Error(data?.error || "Bad response");
 
     clearAll();
     for (const p of data.points) addPoint(p);
 
     renderFilters();
+    updateLabelsVisibility();
 
     status.textContent = `✅ OK · ${new Date().toLocaleTimeString()}`;
     countEl.textContent = `Punkty: ${data.count}`;
 
-    if (!didInitialFit && !userInteracted) {
-      fitToVisible();
-      didInitialFit = true;
-    }
+    if (!didInitialFit && !userInteracted) { fitToVisible(); didInitialFit = true; }
   } catch (e) {
     status.textContent = `⚠️ ${e.message}`;
   }
@@ -303,96 +297,5 @@ async function refresh() {
 document.getElementById("fitBtn").onclick = () => fitToVisible();
 document.getElementById("reloadBtn").onclick = () => refresh();
 
-// ======== GEOLOCATION “bajer” ========
-let myLocationMarker = null;
-let myAccuracyCircle = null;
-let lastGeo = null;
-
-function addMyLocationButton() {
-  const panelHeaderRow = document.querySelector(".panel .row");
-  // wstawiamy przycisk obok Fit/Reload/Add (najprościej: pod Fit/Reload jest już row)
-  const actionRow = document.querySelectorAll(".panel .row")[1];
-  if (!actionRow) return;
-
-  const btn = document.createElement("button");
-  btn.className = "btn";
-  btn.id = "myLocBtn";
-  btn.textContent = "Moja lokalizacja";
-  btn.onclick = () => {
-    if (lastGeo) {
-      const { lat, lng } = lastGeo;
-      map.setView([lat, lng], Math.max(map.getZoom(), 14));
-      if (myLocationMarker) myLocationMarker.openPopup();
-      return;
-    }
-    requestMyLocationOnce(true);
-  };
-
-  actionRow.appendChild(btn);
-}
-
-function setMyLocation(lat, lng, accuracy) {
-  lastGeo = { lat, lng, accuracy };
-
-  if (!myLocationMarker) {
-    myLocationMarker = L.circleMarker([lat, lng], {
-      radius: 8,
-      weight: 2,
-      color: "rgba(0,0,0,0.4)",
-      fillColor: "#000000",
-      fillOpacity: 0.9,
-    }).addTo(map);
-
-    myLocationMarker.bindPopup(`<div class="popupTitle">Ty</div><div class="popupMeta muted">Dokładność ~${Math.round(accuracy)}m</div>`);
-  } else {
-    myLocationMarker.setLatLng([lat, lng]);
-    myLocationMarker.setPopupContent(`<div class="popupTitle">Ty</div><div class="popupMeta muted">Dokładność ~${Math.round(accuracy)}m</div>`);
-  }
-
-  if (Number.isFinite(accuracy)) {
-    if (!myAccuracyCircle) {
-      myAccuracyCircle = L.circle([lat, lng], {
-        radius: Math.max(accuracy, 10),
-        weight: 1,
-        color: "rgba(0,0,0,0.2)",
-        fillColor: "rgba(0,0,0,0.08)",
-        fillOpacity: 1,
-      }).addTo(map);
-    } else {
-      myAccuracyCircle.setLatLng([lat, lng]);
-      myAccuracyCircle.setRadius(Math.max(accuracy, 10));
-    }
-  }
-}
-
-function requestMyLocationOnce(centerAfter) {
-  if (!navigator.geolocation) return;
-
-  navigator.geolocation.getCurrentPosition(
-    (pos) => {
-      const { latitude, longitude, accuracy } = pos.coords;
-      setMyLocation(latitude, longitude, accuracy);
-      if (centerAfter) map.setView([latitude, longitude], Math.max(map.getZoom(), 14));
-    },
-    () => {
-      // ignore (user denied)
-    },
-    { enableHighAccuracy: true, timeout: 8000, maximumAge: 10000 }
-  );
-}
-
-// auto-request on mobile-ish devices (but only once)
-function maybeAutoGeo() {
-  const isMobile = window.matchMedia("(max-width: 900px)").matches;
-  if (!isMobile) return;
-
-  // nie spamujemy promptem — prosimy raz po załadowaniu
-  requestMyLocationOnce(false);
-}
-
-addMyLocationButton();
-maybeAutoGeo();
-
-// ===== init =====
 refresh();
 setInterval(refresh, REFRESH_MS);
