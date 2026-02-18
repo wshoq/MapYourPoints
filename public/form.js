@@ -14,8 +14,12 @@ const DEFAULT_SUBS = {
   "Agencja celna / weterynarz": [],
 };
 
-const LS_SUBS = "roadmap_subcategories_v1";
-const LS_DRAFT = "roadmap_form_draft_v1";
+const LS_SUBS = "roadmap_subcategories_v2";
+const LS_DRAFT = "roadmap_form_draft_v2";
+
+function uniq(arr) {
+  return Array.from(new Set((arr || []).map(s => String(s).trim()).filter(Boolean)));
+}
 
 function loadSubs() {
   try {
@@ -32,11 +36,18 @@ function saveSubs(store) {
   localStorage.setItem(LS_SUBS, JSON.stringify(store));
 }
 
-function uniq(arr) {
-  return Array.from(new Set(arr.map(s => String(s).trim()).filter(Boolean)));
+function saveDraft(getState) {
+  localStorage.setItem(LS_DRAFT, JSON.stringify(getState()));
 }
-
-const store = loadSubs();
+function loadDraft() {
+  try {
+    const raw = localStorage.getItem(LS_DRAFT);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+function clearDraft() {
+  localStorage.removeItem(LS_DRAFT);
+}
 
 // elements
 const f = document.getElementById("f");
@@ -45,6 +56,7 @@ const linkEl = document.getElementById("link");
 const noteEl = document.getElementById("note");
 const catEl = document.getElementById("category");
 const subEl = document.getElementById("subcategory");
+const datalistEl = document.getElementById("subListDatalist");
 const submitBtn = document.getElementById("submitBtn");
 
 const okEl = document.getElementById("ok");
@@ -55,39 +67,25 @@ const manageBtn = document.getElementById("manageBtn");
 const manageBox = document.getElementById("manageBox");
 const newSub = document.getElementById("newSub");
 const addSubBtn = document.getElementById("addSubBtn");
-const subList = document.getElementById("subList");
+const subManage = document.getElementById("subManage");
 
-// ---- Draft persistence ----
-function saveDraft() {
-  const draft = {
+const store = loadSubs();
+
+function getState() {
+  return {
     name: nameEl.value || "",
     link: linkEl.value || "",
     note: noteEl.value || "",
     category: catEl.value || "",
     subcategory: subEl.value || "",
   };
-  localStorage.setItem(LS_DRAFT, JSON.stringify(draft));
-}
-
-function loadDraft() {
-  try {
-    const raw = localStorage.getItem(LS_DRAFT);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-}
-
-function clearDraft() {
-  localStorage.removeItem(LS_DRAFT);
 }
 
 [nameEl, linkEl, noteEl, catEl, subEl].forEach((el) => {
-  el.addEventListener("input", saveDraft);
-  el.addEventListener("change", saveDraft);
+  el.addEventListener("input", () => saveDraft(getState));
+  el.addEventListener("change", () => saveDraft(getState));
 });
 
-// ---- Render helpers ----
 function renderCategories() {
   catEl.innerHTML = "";
   for (const c of CATEGORIES) {
@@ -98,94 +96,93 @@ function renderCategories() {
   }
 }
 
-function renderSubcategories(keepSelected = true) {
+function renderDatalist() {
   const cat = catEl.value;
-  const subs = uniq([...(store[cat] || [])]);
-
-  const prev = keepSelected ? (subEl.value || "") : "";
-
-  subEl.innerHTML = "";
-  const none = document.createElement("option");
-  none.value = "";
-  none.textContent = "— (brak) —";
-  subEl.appendChild(none);
-
+  const subs = uniq(store[cat] || []);
+  datalistEl.innerHTML = "";
   for (const s of subs) {
     const opt = document.createElement("option");
     opt.value = s;
-    opt.textContent = s;
-    subEl.appendChild(opt);
-  }
-
-  // restore selection if possible
-  if (keepSelected) {
-    subEl.value = prev;
-    if (subEl.value !== prev) subEl.value = ""; // fallback
+    datalistEl.appendChild(opt);
   }
 }
 
 function renderManageList() {
   const cat = catEl.value;
-  const subs = uniq([...(store[cat] || [])]);
+  const subs = uniq(store[cat] || []);
 
-  subList.innerHTML = "";
+  subManage.innerHTML = "";
+
   if (!subs.length) {
     const empty = document.createElement("div");
     empty.className = "small muted";
     empty.textContent = "Brak podkategorii — dodaj pierwszą powyżej.";
-    subList.appendChild(empty);
+    subManage.appendChild(empty);
     return;
   }
 
   for (const s of subs) {
     const row = document.createElement("div");
-    row.className = "subManageRow";
+    row.className = "subTagRow";
 
-    const name = document.createElement("span");
-    name.textContent = s;
+    const tag = document.createElement("button");
+    tag.type = "button";
+    tag.className = "tagBtn";
+    tag.textContent = s;
+    tag.onclick = () => {
+      subEl.value = s;
+      saveDraft(getState);
+    };
 
     const del = document.createElement("button");
     del.type = "button";
-    del.className = "btn";
-    del.textContent = "Usuń";
+    del.className = "iconBtn";
+    del.title = "Usuń";
+    del.textContent = "✕";
     del.onclick = () => {
       store[cat] = uniq((store[cat] || []).filter(x => x !== s));
       saveSubs(store);
-      renderSubcategories(true);
+      renderDatalist();
       renderManageList();
-      saveDraft();
+      saveDraft(getState);
     };
 
-    row.appendChild(name);
+    row.appendChild(tag);
     row.appendChild(del);
-    subList.appendChild(row);
+    subManage.appendChild(row);
   }
 }
 
-// ---- Init ----
+function showOk(msg) {
+  okEl.style.display = "block";
+  okEl.textContent = msg;
+  errEl.style.display = "none";
+}
+function showErr(msg) {
+  errEl.style.display = "block";
+  errEl.textContent = msg;
+  okEl.style.display = "none";
+}
+
+// init
 renderCategories();
 catEl.value = CATEGORIES[0];
-renderSubcategories(false);
+renderDatalist();
 
-// apply draft after initial render
 const draft = loadDraft();
 if (draft) {
   nameEl.value = draft.name || "";
   linkEl.value = draft.link || "";
   noteEl.value = draft.note || "";
-
   if (draft.category && CATEGORIES.includes(draft.category)) catEl.value = draft.category;
-  renderSubcategories(false);
-
+  renderDatalist();
   subEl.value = draft.subcategory || "";
-  if (subEl.value !== (draft.subcategory || "")) subEl.value = "";
 }
 
-// change category
 catEl.onchange = () => {
-  renderSubcategories(false);
+  renderDatalist();
   renderManageList();
-  saveDraft();
+  saveDraft(getState);
 };
 
 manageBtn.onclick = () => {
@@ -198,47 +195,34 @@ addSubBtn.onclick = () => {
   const cat = catEl.value;
   const val = String(newSub.value || "").trim();
   if (!val) return;
-
   store[cat] = uniq([...(store[cat] || []), val]);
   saveSubs(store);
 
   newSub.value = "";
-  renderSubcategories(true);
+  renderDatalist();
   renderManageList();
 
-  subEl.value = val; // <- super ważne: ustawiamy aktywnie
-  saveDraft();
+  // mega ważne: ustawiamy w input
+  subEl.value = val;
+  saveDraft(getState);
 };
 
-// ---- AJAX submit (no refresh, no lost fields) ----
-function showOk(msg) {
-  okEl.style.display = "block";
-  okEl.textContent = msg;
-  errEl.style.display = "none";
-}
-
-function showErr(msg) {
-  errEl.style.display = "block";
-  errEl.textContent = msg;
-  okEl.style.display = "none";
-}
-
+// submit (AJAX) — nic nie znika przy błędzie
 f.addEventListener("submit", async (e) => {
   e.preventDefault();
 
-  // pewność: subcategory idzie jako string
   const payload = {
     name: String(nameEl.value || "").trim(),
     link: String(linkEl.value || "").trim(),
     category: String(catEl.value || "").trim(),
-    subcategory: String(subEl.value || "").trim(),
+    subcategory: String(subEl.value || "").trim(), // <- TERAZ ZAWSZE TEKST
     note: String(noteEl.value || "").trim(),
   };
 
-  saveDraft();
+  saveDraft(getState);
 
   submitBtn.disabled = true;
-  const prevText = submitBtn.textContent;
+  const prev = submitBtn.textContent;
   submitBtn.textContent = "Wysyłam…";
 
   try {
@@ -250,22 +234,24 @@ f.addEventListener("submit", async (e) => {
     const data = await res.json();
 
     if (!res.ok || !data?.ok) {
-      const dbg = data?.debug?.finalUrl ? ` (debug: ${data.debug.finalUrl})` : "";
-      showErr((data?.error || "Błąd zapisu") + dbg);
+      showErr(data?.error || "Błąd zapisu");
       return;
     }
 
-    showOk("✅ Zapisane! Punkt pojawi się na mapie za ~15 sekund.");
+    showOk("✅ Zapisane! Punkt pojawi się na mapie za chwilę.");
     clearDraft();
 
-    // opcjonalnie: czyścimy tylko link + notatkę, zostawiamy kategorię
+    // czyścimy tylko po sukcesie:
+    nameEl.value = "";
     linkEl.value = "";
     noteEl.value = "";
-    saveDraft();
+    subEl.value = "";
+    manageBox.style.display = "none";
+    saveDraft(getState);
   } catch (err) {
     showErr(String(err?.message || err));
   } finally {
     submitBtn.disabled = false;
-    submitBtn.textContent = prevText;
+    submitBtn.textContent = prev;
   }
 });
