@@ -21,7 +21,7 @@ const FIELD_LNG = "Longitude";
 const FIELD_CAT = "Category";
 const FIELD_SUB = "Subcategory";
 const FIELD_NOTE = "Note";
-const FIELD_NOTES = "Notatki"; // new long text
+const FIELD_NOTES = "Notatki";
 
 const CATEGORIES = [
   "Stacja benzynowa",
@@ -180,7 +180,6 @@ async function geocodeAddress(query) {
   const q = String(query || "").trim();
   if (!q) return null;
 
-  // Nominatim policy: include UA; don't spam (u Was to "secondary" — tu 1 request per submit)
   const url =
     "https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&addressdetails=0&q=" +
     encodeURIComponent(q);
@@ -244,10 +243,6 @@ function splitNotes(raw) {
 function joinNotes(list) {
   return list.map(s => String(s).trim()).filter(Boolean).join("\n---\n");
 }
-function stamp() {
-  const d = new Date();
-  return d.toISOString().replace(/\.\d{3}Z$/, "Z");
-}
 
 // ---------------- Static ----------------
 app.use(express.static(path.join(__dirname, "public"), { etag: false, maxAge: "0" }));
@@ -282,10 +277,39 @@ app.get("/api/points", async (req, res) => {
   }
 });
 
+// ---------------- API: meta (categories -> subcategories from Airtable) ----------------
+app.get("/api/meta", async (req, res) => {
+  try {
+    const maxRecords = Math.min(Number(req.query.max || 2000), 5000);
+    const data = await airtableRequest("GET", `${TABLE_ID}?maxRecords=${encodeURIComponent(String(maxRecords))}`, null);
+
+    const map = {};
+    for (const c of CATEGORIES) map[c] = new Set();
+
+    for (const r of (data.records || [])) {
+      const f = r.fields || {};
+      const cat = String(f[FIELD_CAT] || "").trim();
+      const sub = String(f[FIELD_SUB] || "").trim();
+      if (!cat) continue;
+      if (!map[cat]) map[cat] = new Set();
+      if (sub) map[cat].add(sub);
+    }
+
+    const out = {};
+    for (const [k, set] of Object.entries(map)) {
+      out[k] = Array.from(set).sort((a, b) => a.localeCompare(b, "pl"));
+    }
+
+    res.json({ ok: true, categories: CATEGORIES, subcategories: out });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e.message || e) });
+  }
+});
+
 // ---------------- API: submit (link OR address) ----------------
 async function handleSubmitCore(body) {
   const name = String(body.name || "").trim();
-  const linkOrAddr = String(body.link || "").trim(); // now can be address too
+  const linkOrAddr = String(body.link || "").trim();
   const category = String(body.category || "").trim();
   const subcategory = String(body.subcategory || "").trim();
   const note = String(body.note || "").trim();
@@ -295,29 +319,17 @@ async function handleSubmitCore(body) {
   if (!linkOrAddr) return { ok: false, status: 400, error: "Brak linku lub adresu" };
 
   let coords = null;
-  let debug = {};
 
   if (looksLikeHttpUrl(linkOrAddr)) {
-    const { mapsUrl, finalUrl, visited } = await resolveToMapsUrl(linkOrAddr);
-    debug = { mode: "url", mapsUrl, finalUrl, visited };
-
-    coords =
-      extractLatLngFromUrl(mapsUrl) ||
-      extractLatLngFromUrl(finalUrl) ||
-      extractLatLngFromUrl(linkOrAddr);
+    const { mapsUrl, finalUrl } = await resolveToMapsUrl(linkOrAddr);
+    coords = extractLatLngFromUrl(mapsUrl) || extractLatLngFromUrl(finalUrl) || extractLatLngFromUrl(linkOrAddr);
   } else {
     const geo = await geocodeAddress(linkOrAddr);
-    debug = { mode: "address", query: linkOrAddr, provider: geo?.provider || null };
     if (geo) coords = { lat: geo.lat, lng: geo.lng };
   }
 
   if (!coords || !Number.isFinite(coords.lat) || !Number.isFinite(coords.lng)) {
-    return {
-      ok: false,
-      status: 400,
-      error: "Nie udało się wyciągnąć współrzędnych. Wklej link z Google Maps albo pełny adres.",
-      debug,
-    };
+    return { ok: false, status: 400, error: "Nie udało się wyciągnąć współrzędnych. Wklej link z Google Maps albo pełny adres." };
   }
 
   const payload = {
@@ -326,7 +338,7 @@ async function handleSubmitCore(body) {
         fields: {
           [FIELD_NAME]: name,
           [FIELD_CAT]: category,
-          [FIELD_SUB]: subcategory, // <-- zapisujemy
+          [FIELD_SUB]: subcategory,
           [FIELD_NOTE]: note,
           [FIELD_LAT]: String(coords.lat),
           [FIELD_LNG]: String(coords.lng),
@@ -336,7 +348,7 @@ async function handleSubmitCore(body) {
   };
 
   const created = await airtableRequest("POST", `${TABLE_ID}`, payload);
-  return { ok: true, created, coords, debug };
+  return { ok: true, created, coords };
 }
 
 app.post("/api/submit", async (req, res) => {
@@ -357,9 +369,7 @@ app.get("/api/points/:id/notes", async (req, res) => {
 
     const rec = await airtableRequest("GET", `${TABLE_ID}/${id}`, null);
     const raw = String(rec?.fields?.[FIELD_NOTES] || "");
-    const notes = splitNotes(raw);
-
-    res.json({ ok: true, notes });
+    res.json({ ok: true, notes: splitNotes(raw) });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e.message || e) });
   }
@@ -376,9 +386,10 @@ app.post("/api/points/:id/notes", async (req, res) => {
     const raw = String(rec?.fields?.[FIELD_NOTES] || "");
     const list = splitNotes(raw);
 
-    list.unshift(`[${stamp()}] ${text}`);
-    await airtableUpdateRecord(id, { [FIELD_NOTES]: joinNotes(list) });
+    // BEZ TIMESTAMPÓW
+    list.unshift(text);
 
+    await airtableUpdateRecord(id, { [FIELD_NOTES]: joinNotes(list) });
     res.json({ ok: true, notes: list });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e.message || e) });
@@ -400,7 +411,6 @@ app.delete("/api/points/:id/notes/:idx", async (req, res) => {
 
     list.splice(idx, 1);
     await airtableUpdateRecord(id, { [FIELD_NOTES]: joinNotes(list) });
-
     res.json({ ok: true, notes: list });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e.message || e) });
