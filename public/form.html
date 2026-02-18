@@ -23,15 +23,31 @@
         <input name="link" id="link" required placeholder="https://maps… / https://share… / Ostrołęcka 5 07-420 Kadzidło" />
 
         <label>Kategoria</label>
-        <select name="category" id="category" required></select>
+        <div class="row" style="gap:8px;">
+          <select name="category" id="category" required style="flex:1;"></select>
+          <button class="btn" type="button" id="manageCatBtn">Zarządzaj</button>
+        </div>
+
+        <div id="manageCatBox" class="manageBox" style="display:none;">
+          <div class="small muted" style="margin-bottom:8px;">
+            Dodaj/usuń kategorie (zapis w przeglądarce). Kolor jest losowy.
+          </div>
+
+          <div class="row" style="gap:8px;">
+            <input id="newCat" placeholder="np. Rozrywka / Stacje kontroli / …" />
+            <button class="btn" type="button" id="addCatBtn">Dodaj</button>
+          </div>
+
+          <div id="catManage" class="subManageList"></div>
+        </div>
 
         <label>Podkategoria</label>
         <div class="row" style="gap:8px;">
           <select name="subcategory" id="subcategory" style="flex:1;"></select>
-          <button class="btn" type="button" id="manageBtn">Zarządzaj</button>
+          <button class="btn" type="button" id="manageSubBtn">Zarządzaj</button>
         </div>
 
-        <div id="manageBox" class="manageBox" style="display:none;">
+        <div id="manageSubBox" class="manageBox" style="display:none;">
           <div class="small muted" style="margin-bottom:8px;">
             Dodaj/usuń podkategorie dla wybranej kategorii (zapis w przeglądarce).
           </div>
