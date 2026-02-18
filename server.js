@@ -7,12 +7,12 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(express.json({ limit: "300kb" }));
-app.use(express.urlencoded({ extended: true })); // form POST fallback
+app.use(express.urlencoded({ extended: true }));
 
 // === Airtable config (env) ===
 const AIRTABLE_TOKEN = process.env.AIRTABLE_TOKEN;
-const BASE_ID = process.env.AIRTABLE_BASE_ID;   // <- ustaw w env
-const TABLE_ID = process.env.AIRTABLE_TABLE_ID; // <- ustaw w env
+const BASE_ID = process.env.AIRTABLE_BASE_ID;
+const TABLE_ID = process.env.AIRTABLE_TABLE_ID;
 
 // === Airtable fields (dokładnie jak w tabeli) ===
 const FIELD_NAME = "Name";
@@ -72,11 +72,97 @@ function extractLatLngFromUrl(url) {
   }
 }
 
-async function resolveFinalUrl(url) {
-  const u = String(url || "").trim();
-  if (!u) return u;
-  const res = await fetch(u, { redirect: "follow" });
-  return res.url || u;
+function looksLikeHttpUrl(u) {
+  try {
+    const x = new URL(String(u));
+    return x.protocol === "http:" || x.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+// wyciąga z HTML potencjalny „prawdziwy” link do maps
+function extractMapsUrlFromHtml(html) {
+  const s = String(html || "");
+
+  // canonical
+  let m = s.match(/<link[^>]+rel=["']canonical["'][^>]+href=["']([^"']+)["']/i);
+  if (m && looksLikeHttpUrl(m[1])) return m[1];
+
+  // meta refresh
+  m = s.match(/http-equiv=["']refresh["'][^>]+content=["'][^"']*url=([^"']+)["']/i);
+  if (m) {
+    const u = m[1].trim().replace(/&amp;/g, "&");
+    if (looksLikeHttpUrl(u)) return u;
+  }
+
+  // szukaj pierwszego sensownego URL do google maps
+  m = s.match(/https:\/\/www\.google\.com\/maps[^"'\s<]+/i);
+  if (m) return m[0].replace(/&amp;/g, "&");
+
+  m = s.match(/https:\/\/maps\.app\.goo\.gl\/[^"'\s<]+/i);
+  if (m) return m[0].replace(/&amp;/g, "&");
+
+  // czasem jest encoded url=...
+  m = s.match(/url=([^&"'<> ]+)/i);
+  if (m) {
+    const decoded = decodeURIComponent(m[1]).replace(/&amp;/g, "&");
+    if (looksLikeHttpUrl(decoded)) return decoded;
+  }
+
+  return null;
+}
+
+// fetch, ale tak żeby shortlinki zadziałały „jak w przeglądarce”
+async function fetchWithBrowserHeaders(url) {
+  const res = await fetch(url, {
+    redirect: "follow",
+    headers: {
+      // share.google lubi wyglądać jak browser
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    },
+  });
+  return res;
+}
+
+// rozwiązuje shortlink -> final URL (a jeśli final to HTML, wyciąga z niego link do maps)
+async function resolveToMapsUrl(inputUrl) {
+  const u = String(inputUrl || "").trim();
+  if (!u) return { finalUrl: u, mapsUrl: null };
+
+  // 1) spróbuj klasycznie: fetch i redirect follow
+  let res = await fetchWithBrowserHeaders(u);
+  let finalUrl = res.url || u;
+
+  // 2) jeśli finalUrl już ma coords -> super
+  if (extractLatLngFromUrl(finalUrl)) return { finalUrl, mapsUrl: finalUrl };
+
+  // 3) jeśli odpowiedź jest HTML -> spróbuj wyciągnąć mapsUrl z treści
+  const ctype = (res.headers.get("content-type") || "").toLowerCase();
+  if (ctype.includes("text/html")) {
+    const html = await res.text();
+    const fromHtml = extractMapsUrlFromHtml(html);
+    if (fromHtml) {
+      // spróbuj jeszcze raz rozwinąć (bo to może być maps.app.goo.gl)
+      if (extractLatLngFromUrl(fromHtml)) return { finalUrl, mapsUrl: fromHtml };
+
+      // follow redirects on extracted
+      const res2 = await fetchWithBrowserHeaders(fromHtml);
+      const final2 = res2.url || fromHtml;
+
+      if (extractLatLngFromUrl(final2)) return { finalUrl: final2, mapsUrl: final2 };
+
+      // czasem coords siedzą w tym fromHtml mimo że res2.url nie ma
+      if (extractLatLngFromUrl(fromHtml)) return { finalUrl: fromHtml, mapsUrl: fromHtml };
+
+      return { finalUrl: final2, mapsUrl: final2 };
+    }
+  }
+
+  // 4) fallback
+  return { finalUrl, mapsUrl: finalUrl };
 }
 
 async function airtableRequest(method, pathPart, body) {
@@ -125,18 +211,14 @@ app.get("/api/points", async (req, res) => {
     const points = (data.records || [])
       .map((r) => {
         const f = r.fields || {};
-        const category = String(f[FIELD_CAT] || "").trim();
-        const subcategory = String(f[FIELD_SUB] || "").trim();
-        const note = String(f[FIELD_NOTE] || "").trim();
-
         return {
           id: r.id,
           name: String(f[FIELD_NAME] || "").trim(),
           lat: Number(f[FIELD_LAT]),
           lng: Number(f[FIELD_LNG]),
-          category,
-          subcategory,
-          note,
+          category: String(f[FIELD_CAT] || "").trim(),
+          subcategory: String(f[FIELD_SUB] || "").trim(),
+          note: String(f[FIELD_NOTE] || "").trim(),
           createdTime: r.createdTime,
         };
       })
@@ -148,7 +230,7 @@ app.get("/api/points", async (req, res) => {
   }
 });
 
-// --- submit core (dla /api/submit i /submit) ---
+// --- submit core ---
 async function handleSubmitCore(body) {
   const name = String(body.name || "").trim();
   const link = String(body.link || "").trim();
@@ -159,26 +241,30 @@ async function handleSubmitCore(body) {
   if (!name) return { ok: false, status: 400, error: "Missing name" };
   if (!isValidCategory(category)) return { ok: false, status: 400, error: "Invalid category" };
 
-  // coords: prefer link (jak wcześniej), ale wspieramy też ręczne lat/lng jeśli kiedyś dodasz
+  // coords: allow manual later, but prefer link
   let lat = Number(body.lat);
   let lng = Number(body.lng);
 
   let coords = null;
+  let debug = {};
+
   if (Number.isFinite(lat) && Number.isFinite(lng)) {
     coords = { lat, lng };
   } else {
     if (!link) return { ok: false, status: 400, error: "Missing google maps link" };
 
-    const finalUrl = await resolveFinalUrl(link);
-    coords = extractLatLngFromUrl(finalUrl) || extractLatLngFromUrl(link);
+    const { finalUrl, mapsUrl } = await resolveToMapsUrl(link);
+    debug = { finalUrl, mapsUrl };
+
+    coords = extractLatLngFromUrl(mapsUrl) || extractLatLngFromUrl(finalUrl) || extractLatLngFromUrl(link);
 
     if (!coords || !Number.isFinite(coords.lat) || !Number.isFinite(coords.lng)) {
       return {
         ok: false,
         status: 400,
         error:
-          "Could not extract lat/lng from the link. Use Google Maps → Share and paste a link that contains coordinates.",
-        debugFinalUrl: finalUrl,
+          "Nie udało się wyciągnąć współrzędnych z linku. Spróbuj: Google Maps → Udostępnij → Skopiuj link (albo udostępnij pinezkę, nie samą stronę).",
+        debug,
       };
     }
   }
@@ -199,7 +285,7 @@ async function handleSubmitCore(body) {
   };
 
   const created = await airtableRequest("POST", `${TABLE_ID}`, payload);
-  return { ok: true, created, coords };
+  return { ok: true, created, coords, debug };
 }
 
 // AJAX submit
@@ -213,7 +299,7 @@ app.post("/api/submit", async (req, res) => {
   }
 });
 
-// Form fallback -> redirect
+// Form fallback
 app.post("/submit", async (req, res) => {
   try {
     const out = await handleSubmitCore(req.body);
